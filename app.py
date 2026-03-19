@@ -3,7 +3,7 @@ import pandas as pd
 
 from engine import build_model
 
-# ===== MẬT KHẨU =====
+
 PASSWORD = "123456"
 
 
@@ -12,7 +12,7 @@ def check_password():
         st.session_state.authenticated = False
 
     if not st.session_state.authenticated:
-        st.title("🔒 Truy cập hệ thống")
+        st.title("Truy cập hệ thống")
 
         password_input = st.text_input("Nhập mật khẩu", type="password")
 
@@ -35,7 +35,6 @@ def format_vn(number, decimals=2):
 
 check_password()
 
-# ===== APP CHÍNH =====
 
 st.title("Công cụ ước tính hiệu quả deal")
 
@@ -51,7 +50,7 @@ deal_value = st.number_input(
 st.caption("Hiển thị: " + format_vn(deal_value, 0) + " đ")
 
 cost_pct = st.number_input(
-    "Tỷ lệ giá vốn (% tính trên giá trị hợp đồng)",
+    "Tỷ lệ giá vốn (%)",
     value=70.0,
 )
 st.caption("Hiển thị: " + format_vn(cost_pct, 2) + " %")
@@ -64,20 +63,20 @@ project_months = st.number_input(
 )
 
 dso_days = st.number_input(
-    "Số ngày công nợ thỏa thuận (DSO)",
+    "Số ngày công nợ (DSO)",
     value=30,
     step=1,
     format="%d",
 )
 
 tax_rate = st.number_input(
-    "Thuế suất thuế thu nhập doanh nghiệp (% thuế suất)",
+    "Thuế thu nhập doanh nghiệp (%)",
     value=20.0,
 )
 st.caption("Hiển thị: " + format_vn(tax_rate, 2) + " %")
 
 salvage_pct = st.number_input(
-    "Giá trị thu hồi cuối kỳ (% giá trị hợp đồng)",
+    "Giá trị thu hồi cuối kỳ (%)",
     value=0.0,
 )
 st.caption("Hiển thị: " + format_vn(salvage_pct, 2) + " %")
@@ -85,13 +84,13 @@ st.caption("Hiển thị: " + format_vn(salvage_pct, 2) + " %")
 st.subheader("2. Vốn và vay")
 
 debt_pct = st.number_input(
-    "Tỷ lệ vốn vay (% chi phí giá vốn gốc)",
+    "Tỷ lệ vốn vay (%)",
     value=50.0,
 )
 st.caption("Hiển thị: " + format_vn(debt_pct, 2) + " %")
 
 interest_rate = st.number_input(
-    "Lãi suất vay/năm (% lãi suất)",
+    "Lãi suất vay năm (%)",
     value=12.0,
 )
 st.caption("Hiển thị: " + format_vn(interest_rate, 2) + " %")
@@ -108,7 +107,7 @@ progress_pct = 0.0
 
 if payment_type == "Trả trước":
     upfront_pct = st.number_input(
-        "Tỷ lệ trả trước (% giá trị hợp đồng)",
+        "Tỷ lệ trả trước (%)",
         value=30.0,
     )
     st.caption("Hiển thị: " + format_vn(upfront_pct, 2) + " %")
@@ -163,11 +162,11 @@ if run_button:
 
     result = build_model(inputs)
 
-    with st.expander("Giải thích các chỉ số (bấm để xem)"):
-        st.write("**Tỷ suất sinh lời trên vốn (IRR)**: mức sinh lời ước tính trên phần vốn công ty thực sự phải bỏ ra.")
-        st.write("**Thời gian hoàn vốn**: thời điểm dòng tiền tích lũy quay về từ âm sang không âm hoặc dương.")
-        st.write("**Mức vốn bị giam lớn nhất**: mức âm lớn nhất của dòng tiền tích lũy trong suốt deal.")
-        st.write("**DSO**: số ngày dự kiến phải chờ để thu tiền từ khách.")
+    with st.expander("Giải thích các chỉ số"):
+        st.write("Tỷ suất sinh lời trên vốn: mức sinh lời ước tính trên phần vốn công ty thực sự phải bỏ ra.")
+        st.write("Thời gian hoàn vốn: thời điểm dòng tiền tích lũy quay về từ âm sang không âm hoặc dương.")
+        st.write("Mức vốn bị giam lớn nhất: mức âm lớn nhất của dòng tiền tích lũy trong suốt deal.")
+        st.write("DSO: số ngày dự kiến phải chờ để thu tiền từ khách.")
 
     st.subheader("Kết quả")
 
@@ -194,16 +193,16 @@ if run_button:
     )
 
     if result["decision"] == "GO":
-        st.success("Đánh giá sơ bộ: GO - Nên làm")
+        st.success("Đánh giá sơ bộ: GO Nên làm")
     elif result["decision"] == "REVIEW":
-        st.warning("Đánh giá sơ bộ: REVIEW - Cần xem lại")
+        st.warning("Đánh giá sơ bộ: REVIEW Cần xem lại")
     else:
-        st.error("Đánh giá sơ bộ: NO GO - Không nên làm")
+        st.error("Đánh giá sơ bộ: NO GO Không nên làm")
 
-    st.write("**Diễn giải nhanh**")
+    st.write("Diễn giải nhanh")
     st.write(
-        f"Vốn công ty phải bỏ ra ban đầu ước tính khoảng {format_vn(result['equity'], 0)} đ. "
-        f"Vốn vay thực tế sau khi trừ phần khách trả trước là khoảng {format_vn(result['actual_debt'], 0)} đ."
+        f"Vốn công ty định mức ban đầu ước tính khoảng {format_vn(result['equity'], 0)} đ. "
+        f"Vốn vay thực tế giải ngân là khoảng {format_vn(result['actual_debt'], 0)} đ."
     )
 
     st.subheader("Bảng dòng tiền")
@@ -212,12 +211,13 @@ if run_button:
         {
             "Tháng": result["timeline"],
             "Tiền thu": result["revenue"],
+            "Giải ngân vay": result["debt_draw"],
             "Chi phí": result["cost"],
             "Lãi vay": result["interest"],
             "Trả gốc": result["principal"],
             "Thuế": result["tax"],
             "Thu hồi": result["salvage"],
-            "Vốn bỏ ra": result["equity_outflow"],
+            "Vốn phải bơm": result["equity_outflow"],
             "Dòng tiền ròng": result["net_cf"],
             "Dòng tiền tích lũy": result["cum_cf"],
         }
@@ -226,12 +226,13 @@ if run_button:
     df_display = df.copy()
     for col in [
         "Tiền thu",
+        "Giải ngân vay",
         "Chi phí",
         "Lãi vay",
         "Trả gốc",
         "Thuế",
         "Thu hồi",
-        "Vốn bỏ ra",
+        "Vốn phải bơm",
         "Dòng tiền ròng",
         "Dòng tiền tích lũy",
     ]:
