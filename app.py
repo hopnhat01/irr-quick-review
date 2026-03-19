@@ -51,7 +51,7 @@ deal_value = st.number_input(
 st.caption("Hiển thị: " + format_vn(deal_value, 0) + " đ")
 
 cost_pct = st.number_input(
-    "Tỷ lệ giá vốn (%)",
+    "Tỷ lệ giá vốn (% tính trên giá trị hợp đồng)",
     value=70.0,
 )
 st.caption("Hiển thị: " + format_vn(cost_pct, 2) + " %")
@@ -64,20 +64,20 @@ project_months = st.number_input(
 )
 
 dso_days = st.number_input(
-    "Số ngày công nợ (DSO)",
+    "Số ngày công nợ thỏa thuận (DSO)",
     value=30,
     step=1,
     format="%d",
 )
 
 tax_rate = st.number_input(
-    "Thuế thu nhập doanh nghiệp (%)",
+    "Thuế suất thuế thu nhập doanh nghiệp (% thuế suất)",
     value=20.0,
 )
 st.caption("Hiển thị: " + format_vn(tax_rate, 2) + " %")
 
 salvage_pct = st.number_input(
-    "Giá trị thu hồi cuối kỳ (%)",
+    "Giá trị thu hồi cuối kỳ (% giá trị hợp đồng)",
     value=0.0,
 )
 st.caption("Hiển thị: " + format_vn(salvage_pct, 2) + " %")
@@ -85,13 +85,13 @@ st.caption("Hiển thị: " + format_vn(salvage_pct, 2) + " %")
 st.subheader("2. Vốn và vay")
 
 debt_pct = st.number_input(
-    "Tỷ lệ vốn vay (%)",
+    "Tỷ lệ vốn vay (% giá trị hợp đồng)",
     value=50.0,
 )
 st.caption("Hiển thị: " + format_vn(debt_pct, 2) + " %")
 
 interest_rate = st.number_input(
-    "Lãi suất vay năm (%)",
+    "Lãi suất vay/năm (% lãi suất)",
     value=12.0,
 )
 st.caption("Hiển thị: " + format_vn(interest_rate, 2) + " %")
