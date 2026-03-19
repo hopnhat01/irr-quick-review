@@ -85,7 +85,7 @@ st.caption("Hiển thị: " + format_vn(salvage_pct, 2) + " %")
 st.subheader("2. Vốn và vay")
 
 debt_pct = st.number_input(
-    "Tỷ lệ vốn vay (% giá trị hợp đồng)",
+    "Tỷ lệ vốn vay (% chi phí giá vốn gốc)",
     value=50.0,
 )
 st.caption("Hiển thị: " + format_vn(debt_pct, 2) + " %")
@@ -108,7 +108,7 @@ progress_pct = 0.0
 
 if payment_type == "Trả trước":
     upfront_pct = st.number_input(
-        "Tỷ lệ trả trước (%)",
+        "Tỷ lệ trả trước (% giá trị hợp đồng)",
         value=30.0,
     )
     st.caption("Hiển thị: " + format_vn(upfront_pct, 2) + " %")
