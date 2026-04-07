@@ -182,7 +182,7 @@ interest_rate = st.number_input(
 st.caption("Hiển thị: " + format_vn(interest_rate, 2) + " %")
 
 bank_rate_pct = st.number_input(
-    "Lãi suất ngân hàng benchmark năm (%)",
+    "Lãi suất ngân hàng benchmark năm (%) để so sánh tương ứng lãi tiền gửi",
     min_value=0.0,
     max_value=100.0,
     value=6.0,
@@ -226,7 +226,7 @@ st.subheader("3. Các giai đoạn nghiệm thu")
 
 st.caption(
     "Nhập tối đa 5 giai đoạn. Có thể để trống các giai đoạn cuối. "
-    "Mỗi giai đoạn gồm thời lượng thi công (tháng), tỷ lệ thanh toán (% theo giá trị hợp đồng) "
+    "Mỗi giai đoạn gồm thời lượng thi công (tháng), tỷ lệ thanh toán (% theo giá trị hợp đồng sau chiết khấu) "
     "và tỷ lệ chi tiền đầu giai đoạn (% theo giá vốn)."
 )
 
@@ -250,7 +250,7 @@ stage_cost_out_raw = []
 header_cols = st.columns([2.1, 1.1, 1.4, 1.6])
 header_cols[0].markdown("**Tên giai đoạn**")
 header_cols[1].markdown("**Thời gian (tháng)**")
-header_cols[2].markdown("**Thanh toán (% HĐ)**")
+header_cols[2].markdown("**Thanh toán (% HĐ sau chiết khấu)**")
 header_cols[3].markdown("**Chi tiền đầu kỳ (% giá vốn)**")
 
 for i in range(5):
