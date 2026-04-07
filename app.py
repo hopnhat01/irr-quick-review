@@ -422,18 +422,14 @@ if run_button:
             "deal_value": float(deal_value),
             "cost_pct": float(cost_pct),
             "salvage_pct": float(salvage_pct),
-            "tax_rate": float(tax_rate),              # CIT
+            "tax_rate": float(tax_rate),
             "avg_dso_days": int(avg_dso_days),
-
-            "owner_advance_pct": float(owner_advance_pct),   # % theo giá trị hợp đồng
+            "owner_advance_pct": float(owner_advance_pct),
             "interest_rate": float(interest_rate),
-
-            "stages": stages,                                  # thời gian + payment %
-            "debt_draw_schedule": debt_draw_schedule,          # tối đa 4 đợt, % theo giá vốn
-
-            "after_sales_pct": float(after_sales_pct),        # % theo giá trị hợp đồng
+            "stages": stages,
+            "debt_draw_schedule": debt_draw_schedule,
+            "after_sales_pct": float(after_sales_pct),
             "warranty_months": int(warranty_months),
-
             "total_project_months": int(total_project_months),
         }
 
@@ -444,11 +440,47 @@ if run_button:
 
         st.subheader("Kết quả")
 
-        col1, col2, col3 = st.columns(3)
-
+        # =========================
+        # Lấy dữ liệu từ engine
+        # =========================
         equity_irr = result.get("equity_irr_annual", result.get("irr_annual"))
+        project_irr = result.get("project_irr_annual")
         payback_month = result.get("payback_month")
         peak_equity = result.get("peak_equity_at_risk", result.get("peak_cash_out"))
+        peak_debt = result.get("peak_debt")
+        total_cost = result.get("total_cost")
+
+        equity_multiple = result.get("equity_multiple")
+        moic = result.get("moic", equity_multiple)
+
+        deal_value_result = float(result.get("deal_value", 0.0))
+        total_cost_value = float(total_cost) if total_cost is not None else 0.0
+        salvage_value_total = float(result.get("salvage_value_total", 0.0))
+        after_sales_total = float(result.get("after_sales_total", 0.0))
+        total_interest = float(result.get("total_interest", 0.0))
+        total_cit = float(result.get("total_cit", 0.0))
+
+        # Lợi nhuận ròng ước tính
+        net_profit = (
+            deal_value_result
+            + salvage_value_total
+            - total_cost_value
+            - after_sales_total
+            - total_interest
+            - total_cit
+        )
+
+        # Net Profit Margin = Lợi nhuận ròng / doanh thu hợp đồng
+        net_profit_margin = (
+            net_profit / deal_value_result * 100.0
+            if deal_value_result > 0
+            else None
+        )
+
+        # =========================
+        # KPI hàng 1
+        # =========================
+        col1, col2, col3, col4 = st.columns(4)
 
         col1.metric(
             "IRR vốn chủ",
@@ -456,36 +488,73 @@ if run_button:
         )
 
         col2.metric(
+            "Equity Multiple",
+            format_vn(equity_multiple, 2) + "x" if equity_multiple is not None else "Không tính được",
+        )
+
+        col3.metric(
+            "MOIC",
+            format_vn(moic, 2) + "x" if moic is not None else "Không tính được",
+        )
+
+        col4.metric(
             "Thời gian hoàn vốn",
             f"{payback_month} tháng" if payback_month is not None else "Chưa hoàn vốn",
         )
 
-        col3.metric(
-            "Mức vốn bị giam lớn nhất",
-            format_vn(peak_equity, 0) + " đ" if peak_equity is not None else "-",
-        )
+        # =========================
+        # KPI hàng 2
+        # =========================
+        col5, col6, col7, col8 = st.columns(4)
 
-        col4, col5, col6 = st.columns(3)
-
-        project_irr = result.get("project_irr_annual")
-        peak_debt = result.get("peak_debt")
-        total_cost = result.get("total_cost")
-
-        col4.metric(
+        col5.metric(
             "IRR dự án",
             format_vn(project_irr, 2) + " %" if project_irr is not None else "Không tính được",
         )
 
-        col5.metric(
+        col6.metric(
+            "Net Profit Margin",
+            format_vn(net_profit_margin, 2) + " %" if net_profit_margin is not None else "Không tính được",
+        )
+
+        col7.metric(
+            "Mức vốn bị giam lớn nhất",
+            format_vn(peak_equity, 0) + " đ" if peak_equity is not None else "-",
+        )
+
+        col8.metric(
             "Dư nợ vay lớn nhất",
             format_vn(peak_debt, 0) + " đ" if peak_debt is not None else "-",
         )
 
-        col6.metric(
+        # =========================
+        # KPI hàng 3
+        # =========================
+        col9, col10, col11, col12 = st.columns(4)
+
+        col9.metric(
             "Tổng giá vốn",
             format_vn(total_cost, 0) + " đ" if total_cost is not None else "-",
         )
 
+        col10.metric(
+            "Lợi nhuận ròng ước tính",
+            format_vn(net_profit, 0) + " đ",
+        )
+
+        col11.metric(
+            "Tổng lãi vay",
+            format_vn(total_interest, 0) + " đ",
+        )
+
+        col12.metric(
+            "Thuế CIT",
+            format_vn(total_cit, 0) + " đ",
+        )
+
+        # =========================
+        # Đánh giá sơ bộ
+        # =========================
         decision = result.get("decision")
         if decision == "GO":
             st.success("Đánh giá sơ bộ: GO - Nên làm")
@@ -494,6 +563,26 @@ if run_button:
         elif decision == "NO GO":
             st.error("Đánh giá sơ bộ: NO GO - Không nên làm")
 
+        st.caption(
+            "Đánh giá sơ bộ hiện tại đang dựa trên IRR vốn chủ: "
+            "GO nếu IRR >= 25%, REVIEW nếu IRR từ 15% đến dưới 25%, "
+            "NO GO nếu IRR < 15%. Nếu IRR không tính được thì mặc định REVIEW."
+        )
+
+        if payback_month is None:
+            st.info(
+                "Chưa có thời gian hoàn vốn vì dòng tiền vốn chủ lũy kế "
+                "chưa quay về mức >= 0 trong toàn bộ timeline của mô hình."
+            )
+
+        st.caption(
+            "MOIC hiện đang lấy theo result['moic'] nếu engine có trả riêng; "
+            "nếu chưa có thì tạm dùng cùng giá trị với Equity Multiple."
+        )
+
+        # =========================
+        # Kế hoạch các giai đoạn
+        # =========================
         if result.get("stage_plan"):
             st.subheader("Kế hoạch các giai đoạn")
             stage_df = pd.DataFrame(result["stage_plan"])
@@ -511,6 +600,9 @@ if run_button:
 
             st.dataframe(stage_df_display, use_container_width=True)
 
+        # =========================
+        # Biểu đồ dòng tiền vốn chủ
+        # =========================
         if result.get("timeline") and result.get("equity_cf"):
             st.subheader("Biểu đồ dòng tiền vốn chủ")
             chart_df = pd.DataFrame(
@@ -521,6 +613,9 @@ if run_button:
             ).set_index("Tháng")
             st.line_chart(chart_df)
 
+        # =========================
+        # Bảng dòng tiền
+        # =========================
         cashflow_keys = [
             "timeline",
             "customer_advance",
@@ -563,6 +658,15 @@ if run_button:
 
             df_display = format_money_series(df, exclude_cols=["Tháng"])
             st.dataframe(df_display, use_container_width=True)
+
+        # =========================
+        # Diễn giải KPI
+        # =========================
+        with st.expander("Giải thích các chỉ số", expanded=False):
+            st.write("- **Equity Multiple**: Tổng tiền trả về cho vốn chủ / Tổng vốn chủ đã bơm vào.")
+            st.write("- **MOIC**: Multiple on Invested Capital. Trong bản app này đang hiển thị theo result['moic'] nếu engine có trả, nếu chưa thì tạm dùng cùng giá trị với Equity Multiple.")
+            st.write("- **Net Profit Margin**: Lợi nhuận ròng / Giá trị hợp đồng.")
+            st.write("- **Thời gian hoàn vốn**: Tháng đầu tiên mà dòng tiền vốn chủ lũy kế quay về >= 0.")
 
     except Exception as e:
         st.error(f"Có lỗi khi xử lý dữ liệu đầu vào hoặc tính toán: {str(e)}")
