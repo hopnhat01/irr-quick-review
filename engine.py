@@ -389,6 +389,9 @@ def build_model(inputs):
         closing_cash_local = [0.0] * (horizon + 1)
         debt_balance_series_local = [0.0] * (horizon + 1)
 
+        reserve_required_local = [0.0] * (horizon + 1)
+        excess_cash_distributed_local = [0.0] * (horizon + 1)
+
         stage_cash_used_map = {stage["stage_no"]: 0.0 for stage in stage_plan}
         stage_debt_used_map = {stage["stage_no"]: 0.0 for stage in stage_plan}
         stage_equity_used_map = {stage["stage_no"]: 0.0 for stage in stage_plan}
@@ -399,25 +402,127 @@ def build_model(inputs):
         debt_balance = 0.0
         peak_debt_local = 0.0
 
+        def calc_principal_due(month_idx, current_debt_balance):
+            if current_debt_balance <= EPS:
+                return 0.0
+
+            if principal_repayment_mode == "Trả đều theo tháng":
+                if 1 <= month_idx <= last_collection_month:
+                    remaining_periods = last_collection_month - month_idx + 1
+                    if remaining_periods > 0:
+                        return current_debt_balance / remaining_periods
+                return 0.0
+
+            if principal_repayment_mode == "Trả toàn bộ tại tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối":
+                if month_idx == last_collection_month:
+                    return current_debt_balance
+                return 0.0
+
+            return 0.0
+
+        def simulate_forward_no_distribution(start_month, starting_cash, starting_debt):
+            sim_cash = float(starting_cash)
+            sim_debt = float(starting_debt)
+            future_equity_needed = 0.0
+
+            for tt in range(start_month, horizon + 1):
+                sim_cash += customer_advance[tt] + collections[tt] + salvage[tt]
+
+                if tt in stage_by_start_month:
+                    sim_stage = stage_by_start_month[tt]
+                    sim_stage_cost = sim_stage["stage_cost"]
+
+                    sim_cash_used = min(sim_cash, sim_stage_cost)
+                    sim_cash -= sim_cash_used
+                    sim_remaining_stage_cost = sim_stage_cost - sim_cash_used
+
+                    sim_stage_debt_limit = debt_limit_amount_by_stage.get(sim_stage["stage_no"], 0.0)
+                    sim_debt_used = min(sim_remaining_stage_cost, sim_stage_debt_limit)
+                    if sim_debt_used > EPS:
+                        sim_debt += sim_debt_used
+                        sim_remaining_stage_cost -= sim_debt_used
+
+                    if sim_remaining_stage_cost > EPS:
+                        future_equity_needed += sim_remaining_stage_cost
+                        sim_remaining_stage_cost = 0.0
+
+                sim_interest_due = sim_debt * monthly_interest_rate if sim_debt > EPS else 0.0
+                sim_principal_due = calc_principal_due(tt, sim_debt)
+                sim_other_outflows = after_sales[tt] + sim_interest_due + tax_local[tt] + sim_principal_due
+
+                if sim_cash >= sim_other_outflows:
+                    sim_cash -= sim_other_outflows
+                else:
+                    sim_shortage = sim_other_outflows - sim_cash
+                    future_equity_needed += sim_shortage
+                    sim_cash = 0.0
+
+                if sim_principal_due > EPS:
+                    sim_debt -= sim_principal_due
+                    if sim_debt < EPS:
+                        sim_debt = 0.0
+
+            if sim_debt > EPS:
+                future_equity_needed += sim_debt
+                sim_debt = 0.0
+
+            return future_equity_needed
+
+        reserve_cache = {}
+
+        def required_cash_reserve_from_next_month(next_month, current_debt_balance):
+            if next_month > horizon:
+                return 0.0
+
+            cache_key = (next_month, round(current_debt_balance, 8))
+            if cache_key in reserve_cache:
+                return reserve_cache[cache_key]
+
+            equity_need_at_zero_cash = simulate_forward_no_distribution(
+                start_month=next_month,
+                starting_cash=0.0,
+                starting_debt=current_debt_balance,
+            )
+
+            if equity_need_at_zero_cash <= EPS:
+                reserve_cache[cache_key] = 0.0
+                return 0.0
+
+            lo = 0.0
+            hi = equity_need_at_zero_cash
+
+            for _ in range(60):
+                mid = (lo + hi) / 2.0
+                future_equity_needed = simulate_forward_no_distribution(
+                    start_month=next_month,
+                    starting_cash=mid,
+                    starting_debt=current_debt_balance,
+                )
+                if future_equity_needed <= EPS:
+                    hi = mid
+                else:
+                    lo = mid
+
+            reserve_cache[cache_key] = hi
+            return hi
+
         for t in timeline:
             opening_cash_local[t] = cash_balance
 
-            # Tiền vào từ khách/thu hồi được cộng vào đầu tháng
+            # 1) Tiền vào đầu tháng
             cash_balance += customer_advance[t] + collections[t] + salvage[t]
 
-            # Nếu là đầu giai đoạn -> chi tiền đầu giai đoạn theo thứ tự:
+            # 2) Nếu đầu giai đoạn -> chi tiền đầu giai đoạn theo thứ tự:
             # tiền sẵn có/CĐT -> vay của giai đoạn đó -> VCSH
             if t in stage_by_start_month:
                 stage = stage_by_start_month[t]
                 stage_no = stage["stage_no"]
                 stage_cost = stage["stage_cost"]
 
-                # 1) Dùng tiền sẵn có trước
                 cash_used = min(cash_balance, stage_cost)
                 cash_balance -= cash_used
                 remaining_stage_cost = stage_cost - cash_used
 
-                # 2) Rút vay của giai đoạn đó nếu còn thiếu
                 stage_debt_limit = debt_limit_amount_by_stage.get(stage_no, 0.0)
                 debt_used = min(remaining_stage_cost, stage_debt_limit)
                 if debt_used > EPS:
@@ -425,7 +530,6 @@ def build_model(inputs):
                     debt_balance += debt_used
                     remaining_stage_cost -= debt_used
 
-                # 3) Phần thiếu còn lại -> VCSH
                 equity_used_for_stage = 0.0
                 if remaining_stage_cost > EPS:
                     equity_used_for_stage = remaining_stage_cost
@@ -438,23 +542,14 @@ def build_model(inputs):
 
             peak_debt_local = max(peak_debt_local, debt_balance)
 
-            # Lãi tháng tính trên dư nợ sau draw đầu tháng
+            # 3) Lãi tháng tính trên dư nợ sau draw đầu tháng
             interest_due = debt_balance * monthly_interest_rate if debt_balance > EPS else 0.0
             interest_local[t] = interest_due
 
-            # Trả gốc theo mode
-            principal_due = 0.0
-            if debt_balance > EPS:
-                if principal_repayment_mode == "Trả đều theo tháng":
-                    if 1 <= t <= last_collection_month:
-                        remaining_periods = last_collection_month - t + 1
-                        if remaining_periods > 0:
-                            principal_due = debt_balance / remaining_periods
-                elif principal_repayment_mode == "Trả toàn bộ tại tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối":
-                    if t == last_collection_month:
-                        principal_due = debt_balance
+            # 4) Trả gốc theo mode
+            principal_due = calc_principal_due(t, debt_balance)
 
-            # Các chi phí khác trong tháng: hậu mãi, lãi, thuế, gốc
+            # 5) Các chi phí khác trong tháng
             other_outflows = after_sales[t] + interest_due + tax_local[t] + principal_due
 
             if cash_balance >= other_outflows:
@@ -464,23 +559,34 @@ def build_model(inputs):
                 cash_balance = 0.0
                 equity_in_local[t] += shortage
 
-            # Sau khi đã trả gốc bằng cash hoặc equity thì giảm dư nợ
             if principal_due > EPS:
                 debt_balance -= principal_due
                 if debt_balance < EPS:
                     debt_balance = 0.0
                 principal_local[t] = principal_due
 
-            # Nếu đến cuối horizon mà vẫn còn nợ (do sai số) thì tất toán bằng equity
             if t == horizon and debt_balance > EPS:
                 equity_in_local[t] += debt_balance
                 principal_local[t] += debt_balance
                 debt_balance = 0.0
 
-            # Cuối horizon mới trả tiền dư về vốn chủ
-            if t == horizon and cash_balance > EPS:
-                equity_out_local[t] = cash_balance
-                cash_balance = 0.0
+            # 6) Phân phối tiền dư về VCSH:
+            # giữ lại đúng reserve tối thiểu, chỉ trả phần vượt reserve
+            if t < horizon and cash_balance > EPS:
+                reserve_needed = required_cash_reserve_from_next_month(
+                    next_month=t + 1,
+                    current_debt_balance=debt_balance,
+                )
+            else:
+                reserve_needed = 0.0
+
+            reserve_required_local[t] = reserve_needed
+
+            distributable_cash = max(0.0, cash_balance - reserve_needed)
+            if distributable_cash > EPS:
+                equity_out_local[t] = distributable_cash
+                excess_cash_distributed_local[t] = distributable_cash
+                cash_balance -= distributable_cash
 
             debt_balance_series_local[t] = debt_balance
             closing_cash_local[t] = cash_balance
@@ -502,6 +608,8 @@ def build_model(inputs):
             "stage_cash_used_map": stage_cash_used_map,
             "stage_debt_used_map": stage_debt_used_map,
             "stage_equity_used_map": stage_equity_used_map,
+            "reserve_required": reserve_required_local,
+            "excess_cash_distributed": excess_cash_distributed_local,
         }
 
     # Pass 1: chưa tính tax để lấy tổng lãi vay
@@ -532,6 +640,8 @@ def build_model(inputs):
     debt_balance_series = pass2["debt_balance"]
     peak_debt = pass2["peak_debt"]
     total_interest = pass2["total_interest"]
+    reserve_required = pass2["reserve_required"]
+    excess_cash_distributed = pass2["excess_cash_distributed"]
 
     # Gắn thông tin dùng vốn thực tế vào stage_plan
     for stage in stage_plan:
@@ -722,6 +832,9 @@ def build_model(inputs):
 
         "opening_cash": opening_cash,
         "closing_cash": closing_cash,
+
+        "reserve_required": reserve_required,
+        "excess_cash_distributed": excess_cash_distributed,
 
         "project_cf": project_cf,
         "project_irr_annual": project_irr_annual,
