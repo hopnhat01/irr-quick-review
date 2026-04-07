@@ -74,9 +74,11 @@ with st.expander("Giải thích nhanh cách nhập liệu", expanded=False):
     st.write("3) Mỗi giai đoạn cần nhập thời lượng thi công, tỷ lệ thanh toán (% giá trị hợp đồng) và tỷ lệ chi tiền đầu giai đoạn (% giá vốn).")
     st.write("4) Tổng tỷ lệ thanh toán của các giai đoạn phải bằng đúng 100% giá trị hợp đồng.")
     st.write("5) Tổng tỷ lệ chi tiền đầu các giai đoạn phải bằng đúng 100% giá vốn.")
-    st.write("6) Giải ngân vay tối đa 4 đợt, đi theo các giai đoạn 1 đến 4 và nhập theo % giá vốn.")
-    st.write("7) Thuế CIT là thuế thu nhập doanh nghiệp.")
-    st.write("8) Số ngày công nợ là số ngày chậm thanh toán trung bình sau mỗi lần nghiệm thu.")
+    st.write("6) Hạn mức vay theo giai đoạn được nhập theo % giá vốn. Hệ thống sẽ ưu tiên dùng tiền sẵn có từ CĐT/thu trước đó trước, phần thiếu mới rút vay, phần thiếu còn lại mới dùng VCSH.")
+    st.write("7) Có thể chọn 2 kiểu trả gốc vay: trả đều theo tháng hoặc trả toàn bộ tại tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối.")
+    st.write("8) Lãi vay được tính hàng tháng trên dư nợ sau khi rút vay đầu tháng.")
+    st.write("9) Thuế CIT là thuế thu nhập doanh nghiệp.")
+    st.write("10) Số ngày công nợ là số ngày chậm thanh toán trung bình sau mỗi lần nghiệm thu.")
 
 
 # =========================
@@ -162,6 +164,15 @@ interest_rate = st.number_input(
     step=0.1,
 )
 st.caption("Hiển thị: " + format_vn(interest_rate, 2) + " %")
+
+principal_repayment_mode = st.selectbox(
+    "Phương thức trả gốc vay",
+    options=[
+        "Trả đều theo tháng",
+        "Trả toàn bộ tại tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối",
+    ],
+    index=0,
+)
 
 owner_advance_amount_preview = deal_value * owner_advance_pct / 100.0
 st.metric("Giá trị tạm ứng CĐT ban đầu", format_vn(owner_advance_amount_preview, 0) + " đ")
@@ -249,13 +260,14 @@ for i in range(5):
 
 
 # =========================
-# 4. GIẢI NGÂN VAY THEO GIAI ĐOẠN
+# 4. HẠN MỨC VAY THEO GIAI ĐOẠN
 # =========================
-st.subheader("4. Giải ngân vay theo giai đoạn")
+st.subheader("4. Hạn mức vay theo giai đoạn")
 
 st.caption(
-    "Tối đa 4 đợt giải ngân vay, tương ứng với các giai đoạn 1 đến 4. "
-    "Các tỷ lệ này nhập theo % giá vốn."
+    "Tối đa 4 hạn mức vay, tương ứng với các giai đoạn 1 đến 4. "
+    "Các tỷ lệ này nhập theo % giá vốn. Hệ thống sẽ chỉ rút vay khi chi đầu giai đoạn "
+    "vượt quá tiền sẵn có từ CĐT/thu trước đó."
 )
 
 default_loan_draw_raw = ["20", "20", "", ""]
@@ -265,7 +277,7 @@ loan_cols = st.columns(4)
 for i in range(4):
     with loan_cols[i]:
         draw_text = st.text_input(
-            f"Vay GĐ{i+1} (% giá vốn)",
+            f"Hạn mức vay GĐ{i+1} (% giá vốn)",
             value=default_loan_draw_raw[i],
             key=f"loan_draw_{i+1}",
             placeholder="Để trống nếu không dùng",
@@ -383,7 +395,7 @@ if run_button:
             errors.append("Tổng tỷ lệ chi tiền đầu các giai đoạn phải bằng đúng 100% giá vốn.")
 
         # -------------------------
-        # Parse loan draw schedule
+        # Parse debt capacity by stage
         # -------------------------
         debt_draw_schedule = []
         blank_loan_started = False
@@ -392,7 +404,7 @@ if run_button:
             stage_no = i + 1
             draw_pct_cost = parse_optional_float(
                 loan_draw_raw[i],
-                f"Giải ngân vay giai đoạn {stage_no}",
+                f"Hạn mức vay giai đoạn {stage_no}",
             )
 
             if draw_pct_cost is None:
@@ -400,16 +412,16 @@ if run_button:
                 continue
 
             if blank_loan_started:
-                errors.append("Các đợt giải ngân vay phải nhập liên tục từ giai đoạn 1.")
+                errors.append("Các hạn mức vay phải nhập liên tục từ giai đoạn 1.")
 
             if draw_pct_cost < 0:
-                errors.append(f"Giải ngân vay giai đoạn {stage_no} không được âm.")
+                errors.append(f"Hạn mức vay giai đoạn {stage_no} không được âm.")
 
             if draw_pct_cost > 100:
-                errors.append(f"Giải ngân vay giai đoạn {stage_no} không thể lớn hơn 100% giá vốn.")
+                errors.append(f"Hạn mức vay giai đoạn {stage_no} không thể lớn hơn 100% giá vốn.")
 
             if stage_no > len(stages):
-                errors.append(f"Không thể nhập giải ngân vay ở giai đoạn {stage_no} khi dự án chỉ có {len(stages)} giai đoạn nghiệm thu.")
+                errors.append(f"Không thể nhập hạn mức vay ở giai đoạn {stage_no} khi dự án chỉ có {len(stages)} giai đoạn nghiệm thu.")
 
             debt_draw_schedule.append(
                 {
@@ -419,9 +431,8 @@ if run_button:
             )
 
         total_debt_draw_pct = sum(item["draw_pct_cost"] for item in debt_draw_schedule) if debt_draw_schedule else 0.0
-
         if total_debt_draw_pct > 100:
-            errors.append("Tổng tỷ lệ giải ngân vay không thể lớn hơn 100% giá vốn.")
+            errors.append("Tổng hạn mức vay không thể lớn hơn 100% giá vốn.")
 
         # -------------------------
         # Basic validations
@@ -457,6 +468,7 @@ if run_button:
             "avg_dso_days": int(avg_dso_days),
             "owner_advance_pct": float(owner_advance_pct),
             "interest_rate": float(interest_rate),
+            "principal_repayment_mode": principal_repayment_mode,
             "stages": stages,
             "debt_draw_schedule": debt_draw_schedule,
             "after_sales_pct": float(after_sales_pct),
@@ -486,9 +498,6 @@ if run_button:
         total_interest = result.get("total_interest")
         total_cit = result.get("total_cit")
 
-        # =========================
-        # KPI hàng 1
-        # =========================
         col1, col2, col3, col4 = st.columns(4)
 
         col1.metric(
@@ -511,9 +520,6 @@ if run_button:
             f"{payback_month} tháng" if payback_month is not None else "Chưa hoàn vốn",
         )
 
-        # =========================
-        # KPI hàng 2
-        # =========================
         col5, col6, col7, col8 = st.columns(4)
 
         col5.metric(
@@ -536,9 +542,6 @@ if run_button:
             format_vn(peak_debt, 0) + " đ" if peak_debt is not None else "-",
         )
 
-        # =========================
-        # KPI hàng 3
-        # =========================
         col9, col10, col11, col12 = st.columns(4)
 
         col9.metric(
@@ -573,6 +576,14 @@ if run_button:
         if decision_basis:
             st.caption(decision_basis)
 
+        source_logic_basis = result.get("source_of_funds_basis")
+        if source_logic_basis:
+            st.caption(source_logic_basis)
+
+        repayment_basis = result.get("principal_repayment_basis")
+        if repayment_basis:
+            st.caption(repayment_basis)
+
         if payback_message:
             if payback_month is None:
                 st.info(payback_message)
@@ -582,15 +593,36 @@ if run_button:
         if result.get("stage_plan"):
             st.subheader("Kế hoạch các giai đoạn")
             stage_df = pd.DataFrame(result["stage_plan"])
-            stage_df_display = stage_df.copy()
+
+            rename_map = {
+                "stage_no": "STT",
+                "name": "Giai đoạn",
+                "duration_months": "Thời gian (tháng)",
+                "start_month": "Tháng bắt đầu",
+                "end_month": "Tháng kết thúc",
+                "collection_month": "Tháng thu tiền",
+                "payment_pct": "Thanh toán (% HĐ)",
+                "cost_out_pct": "Chi tiền đầu kỳ (% GV)",
+                "gross_billing_value": "Billing gross",
+                "advance_offset": "Cấn trừ tạm ứng",
+                "net_collection_value": "Thu tiền thực tế",
+                "stage_cost": "Chi phí đầu kỳ",
+                "customer_cash_used_for_stage_cost": "Dùng tiền sẵn có/CĐT",
+                "actual_debt_draw": "Rút vay thực tế",
+                "actual_equity_for_stage_cost": "VCSH cho chi đầu kỳ",
+            }
+            stage_df_display = stage_df.rename(columns=rename_map)
 
             money_cols = [
-                "gross_billing_value",
-                "advance_offset",
-                "net_collection_value",
-                "stage_cost",
+                "Billing gross",
+                "Cấn trừ tạm ứng",
+                "Thu tiền thực tế",
+                "Chi phí đầu kỳ",
+                "Dùng tiền sẵn có/CĐT",
+                "Rút vay thực tế",
+                "VCSH cho chi đầu kỳ",
             ]
-            pct_cols = ["payment_pct", "cost_out_pct"]
+            pct_cols = ["Thanh toán (% HĐ)", "Chi tiền đầu kỳ (% GV)"]
 
             for col in money_cols:
                 if col in stage_df_display.columns:
@@ -646,7 +678,7 @@ if run_button:
                     "Tháng": result["timeline"],
                     "Tạm ứng CĐT": result["customer_advance"],
                     "Thu tiền nghiệm thu": result["collections"],
-                    "Giải ngân vay": result["debt_draw"],
+                    "Rút vay thực tế": result["debt_draw"],
                     "Chi phí đầu giai đoạn": result["cost"],
                     "Chi phí hậu mãi": result["after_sales"],
                     "Lãi vay": result["interest"],
@@ -678,6 +710,8 @@ if run_button:
             st.write("- **Thời gian hoàn vốn** = Tháng đầu tiên mà dòng tiền vốn chủ lũy kế quay về mức không âm, sau khi đã từng phải bơm vốn.")
             st.write("- **IRR vốn chủ** phản ánh suất sinh lời của vốn chủ sở hữu.")
             st.write("- **IRR dự án** phản ánh suất sinh lời của dự án trước tác động của cấu trúc tài trợ.")
+            st.write("- **Chi phí đầu giai đoạn** được tài trợ theo thứ tự: tiền sẵn có/CĐT -> vay của giai đoạn đó -> VCSH.")
+            st.write("- **Trả gốc vay** có 2 lựa chọn: trả đều theo tháng hoặc trả toàn bộ vào tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối.")
 
     except Exception as e:
         st.error(f"Có lỗi khi xử lý dữ liệu đầu vào hoặc tính toán: {str(e)}")
