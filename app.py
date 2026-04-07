@@ -4,7 +4,7 @@ import pandas as pd
 from engine import build_model
 
 
-PASSWORD = "123456"
+PASSWORD = "000"
 
 
 def check_password():
@@ -53,15 +53,26 @@ def parse_optional_float(value, field_name):
         raise ValueError(f"{field_name} phải là số.") from exc
 
 
+def format_money_series(df, exclude_cols=None):
+    exclude_cols = exclude_cols or []
+    df_display = df.copy()
+    for col in df_display.columns:
+        if col not in exclude_cols:
+            df_display[col] = df_display[col].apply(
+                lambda x: format_vn(x, 0) if isinstance(x, (int, float)) else x
+            )
+    return df_display
+
+
 check_password()
 
 st.title("Công cụ ước tính hiệu quả deal")
 
 with st.expander("Giải thích nhanh cách nhập liệu", expanded=False):
-    st.write("1) Giai đoạn 0 là phần tạm ứng chủ đầu tư ban đầu, không cần nhập thời gian.")
+    st.write("1) Tạm ứng CĐT ban đầu được nhập theo % giá trị hợp đồng.")
     st.write("2) Giai đoạn nghiệm thu tối đa 5 giai đoạn, có thể để trống các giai đoạn cuối.")
-    st.write("3) Mỗi giai đoạn nghiệm thu cần nhập thời lượng thi công và tỷ lệ thanh toán theo giá trị hợp đồng.")
-    st.write("4) Giải ngân vay tối đa 4 đợt, đi theo các giai đoạn 1 đến 4.")
+    st.write("3) Mỗi giai đoạn cần nhập thời lượng thi công và tỷ lệ thanh toán theo giá trị hợp đồng.")
+    st.write("4) Giải ngân vay tối đa 4 đợt, đi theo các giai đoạn 1 đến 4 và nhập theo % giá vốn.")
     st.write("5) Thuế CIT là thuế thu nhập doanh nghiệp.")
     st.write("6) Số ngày công nợ là số ngày chậm thanh toán trung bình sau mỗi lần nghiệm thu.")
 
@@ -118,6 +129,13 @@ avg_dso_days = st.number_input(
 )
 st.caption("Hiển thị: " + format_vn(avg_dso_days, 0) + " ngày")
 
+total_cost_preview = deal_value * cost_pct / 100.0
+salvage_preview = deal_value * salvage_pct / 100.0
+
+col_basic_1, col_basic_2 = st.columns(2)
+col_basic_1.metric("Tổng giá vốn ước tính", format_vn(total_cost_preview, 0) + " đ")
+col_basic_2.metric("Giá trị thu hồi cuối kỳ", format_vn(salvage_preview, 0) + " đ")
+
 
 # =========================
 # 2. NGUỒN VỐN
@@ -125,12 +143,12 @@ st.caption("Hiển thị: " + format_vn(avg_dso_days, 0) + " ngày")
 st.subheader("2. Nguồn vốn")
 
 owner_advance_pct = st.number_input(
-    "Tỷ lệ chi phí tạm ứng chủ đầu tư ban đầu (% theo giá vốn)",
+    "Tỷ lệ tạm ứng chủ đầu tư ban đầu (% theo giá trị hợp đồng)",
     min_value=0.0,
     max_value=100.0,
     value=10.0,
     step=0.1,
-    help="Đây là phần vốn đầu vào ban đầu từ chủ đầu tư, tính theo % giá vốn.",
+    help="Đây là khoản tạm ứng ban đầu của chủ đầu tư, tính theo % giá trị hợp đồng.",
 )
 st.caption("Hiển thị: " + format_vn(owner_advance_pct, 2) + " %")
 
@@ -143,6 +161,9 @@ interest_rate = st.number_input(
 )
 st.caption("Hiển thị: " + format_vn(interest_rate, 2) + " %")
 
+owner_advance_amount_preview = deal_value * owner_advance_pct / 100.0
+st.metric("Giá trị tạm ứng CĐT ban đầu", format_vn(owner_advance_amount_preview, 0) + " đ")
+
 
 # =========================
 # 3. CÁC GIAI ĐOẠN NGHIỆM THU
@@ -151,7 +172,7 @@ st.subheader("3. Các giai đoạn nghiệm thu")
 
 st.caption(
     "Nhập tối đa 5 giai đoạn. Có thể để trống các giai đoạn cuối. "
-    "Mỗi giai đoạn gồm thời lượng thi công (tháng) và tỷ lệ thanh toán của khách (% theo giá trị hợp đồng)."
+    "Mỗi giai đoạn gồm thời lượng thi công (tháng) và tỷ lệ thanh toán (% theo giá trị hợp đồng)."
 )
 
 default_stage_names = [
@@ -217,7 +238,7 @@ st.subheader("4. Giải ngân vay theo giai đoạn")
 
 st.caption(
     "Tối đa 4 đợt giải ngân vay, tương ứng với các giai đoạn 1 đến 4. "
-    "Giai đoạn 0 dùng chi phí tạm ứng chủ đầu tư, nên không nhập vay ở giai đoạn 0."
+    "Các tỷ lệ này nhập theo % giá vốn."
 )
 
 default_loan_draw_raw = ["20", "20", "", ""]
@@ -257,6 +278,9 @@ warranty_months = st.number_input(
     format="%d",
 )
 st.caption("Hiển thị: " + format_vn(warranty_months, 0) + " tháng")
+
+after_sales_amount_preview = deal_value * after_sales_pct / 100.0
+st.metric("Tổng chi phí hậu mãi ước tính", format_vn(after_sales_amount_preview, 0) + " đ")
 
 
 run_button = st.button("Tính kết quả")
@@ -368,9 +392,6 @@ if run_button:
         if total_debt_draw_pct > 100:
             errors.append("Tổng tỷ lệ giải ngân vay không thể lớn hơn 100% giá vốn.")
 
-        if owner_advance_pct + total_debt_draw_pct > 100:
-            errors.append("Tạm ứng chủ đầu tư ban đầu cộng với tổng giải ngân vay không thể vượt quá 100% giá vốn.")
-
         # -------------------------
         # Basic validations
         # -------------------------
@@ -382,6 +403,9 @@ if run_button:
 
         if tax_rate > 100:
             errors.append("Thuế CIT không thể lớn hơn 100%.")
+
+        if owner_advance_pct > 100:
+            errors.append("Tỷ lệ tạm ứng chủ đầu tư ban đầu không thể lớn hơn 100% giá trị hợp đồng.")
 
         if after_sales_pct > 100:
             errors.append("Chi phí bảo hành / bảo hiểm hậu mãi không thể lớn hơn 100% giá trị hợp đồng.")
@@ -398,10 +422,10 @@ if run_button:
             "deal_value": float(deal_value),
             "cost_pct": float(cost_pct),
             "salvage_pct": float(salvage_pct),
-            "tax_rate": float(tax_rate),              # Thuế CIT
+            "tax_rate": float(tax_rate),              # CIT
             "avg_dso_days": int(avg_dso_days),
 
-            "owner_advance_pct": float(owner_advance_pct),   # % theo giá vốn
+            "owner_advance_pct": float(owner_advance_pct),   # % theo giá trị hợp đồng
             "interest_rate": float(interest_rate),
 
             "stages": stages,                                  # thời gian + payment %
@@ -475,7 +499,13 @@ if run_button:
             stage_df = pd.DataFrame(result["stage_plan"])
             stage_df_display = stage_df.copy()
 
-            for col in ["billing_value", "stage_cost"]:
+            money_cols = [
+                "gross_billing_value",
+                "advance_offset",
+                "net_collection_value",
+                "stage_cost",
+            ]
+            for col in money_cols:
                 if col in stage_df_display.columns:
                     stage_df_display[col] = stage_df_display[col].apply(lambda x: format_vn(x, 0))
 
@@ -491,32 +521,32 @@ if run_button:
             ).set_index("Tháng")
             st.line_chart(chart_df)
 
-        # Hiển thị bảng cash flow nếu engine trả ra đủ mảng
-        has_cashflow_arrays = all(
-            key in result
-            for key in [
-                "timeline",
-                "collections",
-                "cost",
-                "after_sales",
-                "interest",
-                "principal",
-                "tax",
-                "salvage",
-                "equity_in",
-                "equity_out",
-                "equity_cf",
-            ]
-        )
+        cashflow_keys = [
+            "timeline",
+            "customer_advance",
+            "collections",
+            "debt_draw",
+            "cost",
+            "after_sales",
+            "interest",
+            "principal",
+            "tax",
+            "salvage",
+            "equity_in",
+            "equity_out",
+            "equity_cf",
+        ]
 
-        if has_cashflow_arrays:
+        if all(key in result for key in cashflow_keys):
             st.subheader("Bảng dòng tiền")
 
             df = pd.DataFrame(
                 {
                     "Tháng": result["timeline"],
-                    "Thu tiền": result["collections"],
-                    "Chi phí thi công": result["cost"],
+                    "Tạm ứng CĐT": result["customer_advance"],
+                    "Thu tiền nghiệm thu": result["collections"],
+                    "Giải ngân vay": result["debt_draw"],
+                    "Chi phí đầu giai đoạn": result["cost"],
                     "Chi phí hậu mãi": result["after_sales"],
                     "Lãi vay": result["interest"],
                     "Trả gốc": result["principal"],
@@ -528,11 +558,10 @@ if run_button:
                 }
             )
 
-            df_display = df.copy()
-            for col in df.columns:
-                if col != "Tháng":
-                    df_display[col] = df_display[col].apply(lambda x: format_vn(x, 0))
+            if "closing_cash" in result:
+                df["Tiền cuối kỳ"] = result["closing_cash"]
 
+            df_display = format_money_series(df, exclude_cols=["Tháng"])
             st.dataframe(df_display, use_container_width=True)
 
     except Exception as e:
