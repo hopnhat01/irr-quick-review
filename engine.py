@@ -478,7 +478,7 @@ def build_model(inputs):
                 debt_balance = 0.0
 
             # Cuối horizon mới trả tiền dư về vốn chủ
-            if cash_balance > EPS:
+            if t == horizon and cash_balance > EPS:
                 equity_out_local[t] = cash_balance
                 cash_balance = 0.0
 
