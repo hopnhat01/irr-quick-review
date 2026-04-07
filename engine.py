@@ -31,21 +31,113 @@ def annualize_monthly_irr(monthly_irr):
     return ((1 + monthly_irr) ** 12 - 1) * 100
 
 
-def get_decision(irr_annual_pct):
-    if irr_annual_pct is None:
-        return "REVIEW"
-    if irr_annual_pct >= 25:
+def fisher_real_rate_pct(nominal_annual_pct, inflation_annual_pct):
+    if nominal_annual_pct is None or inflation_annual_pct is None:
+        return None
+
+    nominal = nominal_annual_pct / 100.0
+    inflation = inflation_annual_pct / 100.0
+
+    if (1 + inflation) <= EPS:
+        return None
+
+    return (((1 + nominal) / (1 + inflation)) - 1) * 100
+
+
+def classify_real_irr_vs_bank(real_irr_pct, bank_real_rate_pct):
+    if real_irr_pct is None or bank_real_rate_pct is None:
+        return (
+            "REVIEW",
+            None,
+            "Không tính được đầy đủ IRR vốn chủ thực hoặc lãi suất ngân hàng thực để so sánh theo Fisher.",
+        )
+
+    spread = real_irr_pct - bank_real_rate_pct
+
+    if spread >= 5:
+        return (
+            "GO",
+            spread,
+            f"IRR vốn chủ thực cao hơn lãi suất ngân hàng thực {spread:.2f} điểm %, tạo chênh lệch đủ hấp dẫn so với kênh gửi ngân hàng.",
+        )
+
+    if spread >= 0:
+        return (
+            "REVIEW",
+            spread,
+            f"IRR vốn chủ thực chỉ cao hơn lãi suất ngân hàng thực {spread:.2f} điểm %, chênh lệch dương nhưng chưa đủ dày để an toàn.",
+        )
+
+    return (
+        "NO GO",
+        spread,
+        f"IRR vốn chủ thực thấp hơn lãi suất ngân hàng thực {abs(spread):.2f} điểm %, nên hiệu quả thực chưa hấp dẫn bằng benchmark ngân hàng.",
+    )
+
+
+def classify_net_profit_margin(net_profit_margin_pct):
+    if net_profit_margin_pct is None:
+        return "REVIEW", "Không tính được Net Profit Margin."
+
+    if net_profit_margin_pct >= 8:
+        return (
+            "GO",
+            f"Net Profit Margin đạt {net_profit_margin_pct:.2f}%, cho thấy biên lợi nhuận ròng tương đối tốt sau khi đã tính chiết khấu, lãi vay và thuế.",
+        )
+
+    if net_profit_margin_pct >= 4:
+        return (
+            "REVIEW",
+            f"Net Profit Margin đạt {net_profit_margin_pct:.2f}%, dương nhưng còn mỏng; cần xem lại độ an toàn của biên lợi nhuận.",
+        )
+
+    return (
+        "NO GO",
+        f"Net Profit Margin chỉ đạt {net_profit_margin_pct:.2f}%, biên lợi nhuận ròng thấp và dễ bị bào mòn nếu phát sinh thêm chi phí hoặc chậm thu tiền.",
+    )
+
+
+def classify_multiple(multiple_value, label):
+    if multiple_value is None:
+        return "REVIEW", f"Không tính được {label}."
+
+    if multiple_value >= 1.5:
+        return (
+            "GO",
+            f"{label} đạt {multiple_value:.2f}x, cho thấy dòng tiền trả về cho vốn chủ khá tốt so với số vốn đã bơm vào.",
+        )
+
+    if multiple_value >= 1.2:
+        return (
+            "REVIEW",
+            f"{label} đạt {multiple_value:.2f}x, có hoàn vốn và có lãi nhưng dư địa chưa thật sự mạnh.",
+        )
+
+    return (
+        "NO GO",
+        f"{label} chỉ đạt {multiple_value:.2f}x, mức thu hồi vốn chủ thấp so với vốn đã bỏ ra.",
+    )
+
+
+def aggregate_decision(real_irr_status, npm_status, multiple_status):
+    if real_irr_status == "NO GO":
+        return "NO GO"
+
+    if npm_status == "NO GO" and multiple_status == "NO GO":
+        return "NO GO"
+
+    if real_irr_status == "GO" and npm_status != "NO GO" and multiple_status != "NO GO":
         return "GO"
-    if irr_annual_pct >= 15:
-        return "REVIEW"
-    return "NO GO"
+
+    return "REVIEW"
 
 
 def build_model(inputs):
     # =========================
     # 1. INPUT
     # =========================
-    deal_value = float(inputs["deal_value"])
+    gross_deal_value = float(inputs["deal_value"])
+    contract_discount_pct = float(inputs.get("contract_discount_pct", 0.0)) / 100.0
     cost_pct = float(inputs["cost_pct"]) / 100.0
     salvage_pct = float(inputs.get("salvage_pct", 0.0)) / 100.0
     cit_rate = float(inputs.get("tax_rate", 0.0)) / 100.0
@@ -53,6 +145,8 @@ def build_model(inputs):
 
     owner_advance_pct = float(inputs.get("owner_advance_pct", 0.0)) / 100.0
     interest_rate_annual = float(inputs.get("interest_rate", 0.0)) / 100.0
+    bank_rate_pct = float(inputs.get("bank_rate_pct", 0.0))
+    inflation_rate_pct = float(inputs.get("inflation_rate_pct", 0.0))
     principal_repayment_mode = str(inputs.get("principal_repayment_mode", "Trả đều theo tháng"))
     after_sales_pct = float(inputs.get("after_sales_pct", 0.0)) / 100.0
     warranty_months = int(inputs.get("warranty_months", 0))
@@ -63,8 +157,11 @@ def build_model(inputs):
     # =========================
     # 2. VALIDATION
     # =========================
-    if deal_value <= 0:
+    if gross_deal_value <= 0:
         raise ValueError("Giá trị hợp đồng phải lớn hơn 0.")
+
+    if not (0 <= contract_discount_pct <= 1):
+        raise ValueError("Chiết khấu hợp đồng phải nằm trong khoảng 0% đến 100%.")
 
     if not (0 <= cost_pct <= 1):
         raise ValueError("Tỷ lệ giá vốn phải nằm trong khoảng 0% đến 100%.")
@@ -76,10 +173,16 @@ def build_model(inputs):
         raise ValueError("Thuế CIT phải nằm trong khoảng 0% đến 100%.")
 
     if not (0 <= owner_advance_pct <= 1):
-        raise ValueError("Tỷ lệ tạm ứng CĐT phải nằm trong khoảng 0% đến 100% giá trị hợp đồng.")
+        raise ValueError("Tỷ lệ tạm ứng CĐT phải nằm trong khoảng 0% đến 100% giá trị hợp đồng sau chiết khấu.")
 
     if not (0 <= after_sales_pct <= 1):
         raise ValueError("Tỷ lệ bảo hành / bảo hiểm hậu mãi phải nằm trong khoảng 0% đến 100% giá trị hợp đồng.")
+
+    if not (0 <= bank_rate_pct <= 100):
+        raise ValueError("Lãi suất ngân hàng benchmark phải nằm trong khoảng 0% đến 100%.")
+
+    if not (0 <= inflation_rate_pct <= 100):
+        raise ValueError("Lạm phát phải nằm trong khoảng 0% đến 100%.")
 
     if warranty_months < 0:
         raise ValueError("Thời hạn bảo hành không được âm.")
@@ -135,10 +238,13 @@ def build_model(inputs):
     # =========================
     # 4. THÔNG SỐ CƠ BẢN
     # =========================
-    total_cost = deal_value * cost_pct
-    salvage_value_total = deal_value * salvage_pct
-    owner_advance_amount = deal_value * owner_advance_pct
-    after_sales_total = deal_value * after_sales_pct
+    contract_discount_amount = gross_deal_value * contract_discount_pct
+    net_contract_value = gross_deal_value - contract_discount_amount
+
+    total_cost = gross_deal_value * cost_pct
+    salvage_value_total = gross_deal_value * salvage_pct
+    owner_advance_amount = net_contract_value * owner_advance_pct
+    after_sales_total = gross_deal_value * after_sales_pct
 
     monthly_interest_rate = interest_rate_annual / 12.0
     delay_month = math.ceil(avg_dso_days / 30.0)
@@ -153,7 +259,10 @@ def build_model(inputs):
         start_month = month_cursor
         end_month = start_month + s["duration_months"] - 1
         collection_month = end_month + delay_month
-        gross_billing_value = deal_value * (s["payment_pct"] / 100.0)
+
+        gross_contract_billing_value = gross_deal_value * (s["payment_pct"] / 100.0)
+        stage_discount_amount = contract_discount_amount * (s["payment_pct"] / 100.0)
+        net_stage_billing_value = net_contract_value * (s["payment_pct"] / 100.0)
         stage_cost = total_cost * (s["cost_out_pct"] / 100.0)
 
         stage_plan.append(
@@ -166,7 +275,9 @@ def build_model(inputs):
                 "collection_month": collection_month,
                 "payment_pct": s["payment_pct"],
                 "cost_out_pct": s["cost_out_pct"],
-                "gross_billing_value": gross_billing_value,
+                "gross_contract_billing_value": gross_contract_billing_value,
+                "stage_discount_amount": stage_discount_amount,
+                "net_stage_billing_value": net_stage_billing_value,
                 "stage_cost": stage_cost,
                 "advance_offset": 0.0,
                 "net_collection_value": 0.0,
@@ -190,7 +301,9 @@ def build_model(inputs):
     # 6. KHỞI TẠO CÁC MẢNG CỐ ĐỊNH
     # =========================
     customer_advance = [0.0] * (horizon + 1)
-    billing = [0.0] * (horizon + 1)
+    billing_gross = [0.0] * (horizon + 1)
+    billing_discount = [0.0] * (horizon + 1)
+    billing_net = [0.0] * (horizon + 1)
     net_billing = [0.0] * (horizon + 1)
     collections = [0.0] * (horizon + 1)
     cost = [0.0] * (horizon + 1)
@@ -198,17 +311,22 @@ def build_model(inputs):
     salvage = [0.0] * (horizon + 1)
     project_tax = [0.0] * (horizon + 1)
 
-    # Tạm ứng CĐT tại T0
+    # Tạm ứng CĐT tại T0, tính trên giá trị hợp đồng sau chiết khấu
     customer_advance[0] = owner_advance_amount
 
     # Billing / collection
     remaining_advance_to_offset = owner_advance_amount
     for stage in stage_plan:
-        gross = stage["gross_billing_value"]
-        billing[stage["end_month"]] += gross
+        gross_stage_billing = stage["gross_contract_billing_value"]
+        stage_discount = stage["stage_discount_amount"]
+        net_stage_billing = stage["net_stage_billing_value"]
 
-        offset_advance = min(gross, remaining_advance_to_offset)
-        net_collection = gross - offset_advance
+        billing_gross[stage["end_month"]] += gross_stage_billing
+        billing_discount[stage["end_month"]] += stage_discount
+        billing_net[stage["end_month"]] += net_stage_billing
+
+        offset_advance = min(net_stage_billing, remaining_advance_to_offset)
+        net_collection = net_stage_billing - offset_advance
         remaining_advance_to_offset -= offset_advance
 
         net_billing[stage["end_month"]] += net_collection
@@ -328,7 +446,7 @@ def build_model(inputs):
             principal_due = 0.0
             if debt_balance > EPS:
                 if principal_repayment_mode == "Trả đều theo tháng":
-                    if t >= 1 and t <= last_collection_month:
+                    if 1 <= t <= last_collection_month:
                         remaining_periods = last_collection_month - t + 1
                         if remaining_periods > 0:
                             principal_due = debt_balance / remaining_periods
@@ -393,10 +511,10 @@ def build_model(inputs):
     # =========================
     # 8. THUẾ
     # =========================
-    pre_tax_profit_equity = deal_value + salvage_value_total - total_cost - after_sales_total - total_interest_pass1
+    pre_tax_profit_equity = net_contract_value + salvage_value_total - total_cost - after_sales_total - total_interest_pass1
     total_cit = max(0.0, pre_tax_profit_equity) * cit_rate
 
-    pre_tax_profit_project = deal_value + salvage_value_total - total_cost - after_sales_total
+    pre_tax_profit_project = net_contract_value + salvage_value_total - total_cost - after_sales_total
     project_tax_total = max(0.0, pre_tax_profit_project) * cit_rate
     project_tax[horizon] = project_tax_total
 
@@ -456,6 +574,10 @@ def build_model(inputs):
     project_irr_annual = annualize_monthly_irr(project_irr_month)
     equity_irr_annual = annualize_monthly_irr(equity_irr_month)
 
+    project_real_irr_annual = fisher_real_rate_pct(project_irr_annual, inflation_rate_pct)
+    equity_real_irr_annual = fisher_real_rate_pct(equity_irr_annual, inflation_rate_pct)
+    bank_real_rate_annual = fisher_real_rate_pct(bank_rate_pct, inflation_rate_pct)
+
     cum_equity_cf = []
     running_cum_equity_cf = 0.0
     for x in equity_cf:
@@ -494,16 +616,47 @@ def build_model(inputs):
 
     moic = equity_multiple
 
-    net_profit = deal_value + salvage_value_total - total_cost - after_sales_total - total_interest - total_cit
+    net_profit = net_contract_value + salvage_value_total - total_cost - after_sales_total - total_interest - total_cit
     net_profit_margin = None
-    if deal_value > EPS:
-        net_profit_margin = (net_profit / deal_value) * 100.0
+    if net_contract_value > EPS:
+        net_profit_margin = (net_profit / net_contract_value) * 100.0
 
-    decision = get_decision(equity_irr_annual)
+    real_irr_status, real_irr_spread_vs_bank, real_irr_explanation = classify_real_irr_vs_bank(
+        equity_real_irr_annual,
+        bank_real_rate_annual,
+    )
+    net_profit_margin_status, net_profit_margin_explanation = classify_net_profit_margin(net_profit_margin)
+    moic_status, moic_explanation = classify_multiple(moic, "MOIC")
+    equity_multiple_status, equity_multiple_explanation = classify_multiple(equity_multiple, "Equity Multiple")
+
+    # Chỉ dùng một trục "multiple" trong quyết định để tránh double count vì MOIC = Equity Multiple trong mô hình hiện tại
+    decision = aggregate_decision(real_irr_status, net_profit_margin_status, moic_status)
+
     decision_basis = (
-        "Đánh giá sơ bộ hiện đang dựa trên IRR vốn chủ năm hóa: "
-        "GO nếu IRR >= 25%, REVIEW nếu IRR từ 15% đến dưới 25%, "
-        "NO GO nếu IRR < 15%. Nếu IRR không tính được thì mặc định REVIEW."
+        "Đánh giá sơ bộ hiện dựa trên 3 lớp: "
+        "(1) IRR vốn chủ thực theo Fisher so với lãi suất ngân hàng thực; "
+        "(2) Net Profit Margin; "
+        "(3) MOIC/Equity Multiple. "
+        "GO khi IRR thực vượt benchmark đủ tốt và các chỉ số còn lại không yếu; "
+        "NO GO nếu IRR thực thua benchmark hoặc cả biên lợi nhuận lẫn multiple đều yếu; "
+        "các trường hợp còn lại là REVIEW."
+    )
+
+    fisher_basis = (
+        "IRR thực và lãi suất ngân hàng thực được quy đổi theo Fisher: "
+        "real = ((1 + nominal) / (1 + inflation)) - 1. "
+        "Việc đánh giá ưu tiên nhìn trên sức sinh lời thực sau khi loại ảnh hưởng của lạm phát."
+    )
+
+    net_profit_margin_basis = (
+        "Net Profit Margin = Lợi nhuận ròng / Giá trị hợp đồng sau chiết khấu. "
+        "Chỉ số này cho biết mỗi 100 đồng doanh thu thực nhận còn lại bao nhiêu đồng lợi nhuận ròng sau chi phí, lãi vay và thuế."
+    )
+
+    multiple_basis = (
+        "MOIC và Equity Multiple trong mô hình hiện tại dùng cùng cơ sở: "
+        "Tổng tiền trả về cho vốn chủ / Tổng vốn chủ đã bơm vào. "
+        "Vì vậy hai chỉ số đang cho cùng giá trị."
     )
 
     source_of_funds_basis = (
@@ -521,12 +674,32 @@ def build_model(inputs):
             "Trả toàn bộ gốc vay tại tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối."
         )
 
+    evaluation_table = [
+        {
+            "Nhóm đánh giá": "IRR thực vs lãi suất NH thực",
+            "Kết quả": real_irr_status,
+            "Diễn giải": real_irr_explanation,
+        },
+        {
+            "Nhóm đánh giá": "Net Profit Margin",
+            "Kết quả": net_profit_margin_status,
+            "Diễn giải": net_profit_margin_explanation,
+        },
+        {
+            "Nhóm đánh giá": "MOIC / Equity Multiple",
+            "Kết quả": moic_status,
+            "Diễn giải": moic_explanation,
+        },
+    ]
+
     return {
         "timeline": timeline,
         "stage_plan": stage_plan,
 
         "customer_advance": customer_advance,
-        "billing": billing,
+        "billing_gross": billing_gross,
+        "billing_discount": billing_discount,
+        "billing_net": billing_net,
         "net_billing": net_billing,
         "collections": collections,
         "ar_balance": ar_balance,
@@ -553,6 +726,10 @@ def build_model(inputs):
         "project_cf": project_cf,
         "project_irr_annual": project_irr_annual,
         "equity_irr_annual": equity_irr_annual,
+        "project_real_irr_annual": project_real_irr_annual,
+        "equity_real_irr_annual": equity_real_irr_annual,
+        "bank_real_rate_annual": bank_real_rate_annual,
+        "real_irr_spread_vs_bank": real_irr_spread_vs_bank,
 
         "equity_multiple": equity_multiple,
         "moic": moic,
@@ -565,10 +742,27 @@ def build_model(inputs):
         "peak_equity_at_risk": peak_equity_at_risk,
         "decision": decision,
         "decision_basis": decision_basis,
+        "fisher_basis": fisher_basis,
+        "net_profit_margin_basis": net_profit_margin_basis,
+        "multiple_basis": multiple_basis,
         "source_of_funds_basis": source_of_funds_basis,
         "principal_repayment_basis": principal_repayment_basis,
 
-        "deal_value": deal_value,
+        "real_irr_status": real_irr_status,
+        "net_profit_margin_status": net_profit_margin_status,
+        "moic_status": moic_status,
+        "equity_multiple_status": equity_multiple_status,
+        "real_irr_explanation": real_irr_explanation,
+        "net_profit_margin_explanation": net_profit_margin_explanation,
+        "moic_explanation": moic_explanation,
+        "equity_multiple_explanation": equity_multiple_explanation,
+        "evaluation_table": evaluation_table,
+
+        "gross_deal_value": gross_deal_value,
+        "contract_discount_pct": contract_discount_pct * 100.0,
+        "contract_discount_amount": contract_discount_amount,
+        "net_contract_value": net_contract_value,
+        "deal_value": gross_deal_value,
         "total_cost": total_cost,
         "owner_advance_amount": owner_advance_amount,
         "after_sales_total": after_sales_total,
@@ -582,4 +776,6 @@ def build_model(inputs):
         "total_actual_debt_draw": total_actual_debt_draw,
         "principal_repayment_mode": principal_repayment_mode,
         "last_collection_month": last_collection_month,
+        "bank_rate_pct": bank_rate_pct,
+        "inflation_rate_pct": inflation_rate_pct,
     }
