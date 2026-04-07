@@ -69,16 +69,18 @@ check_password()
 st.title("Công cụ ước tính hiệu quả deal")
 
 with st.expander("Giải thích nhanh cách nhập liệu", expanded=False):
-    st.write("1) Tạm ứng CĐT ban đầu được nhập theo % giá trị hợp đồng.")
-    st.write("2) Giai đoạn nghiệm thu tối đa 5 giai đoạn, có thể để trống các giai đoạn cuối.")
-    st.write("3) Mỗi giai đoạn cần nhập thời lượng thi công, tỷ lệ thanh toán (% giá trị hợp đồng) và tỷ lệ chi tiền đầu giai đoạn (% giá vốn).")
-    st.write("4) Tổng tỷ lệ thanh toán của các giai đoạn phải bằng đúng 100% giá trị hợp đồng.")
-    st.write("5) Tổng tỷ lệ chi tiền đầu các giai đoạn phải bằng đúng 100% giá vốn.")
-    st.write("6) Hạn mức vay theo giai đoạn được nhập theo % giá vốn. Hệ thống sẽ ưu tiên dùng tiền sẵn có từ CĐT/thu trước đó trước, phần thiếu mới rút vay, phần thiếu còn lại mới dùng VCSH.")
-    st.write("7) Có thể chọn 2 kiểu trả gốc vay: trả đều theo tháng hoặc trả toàn bộ tại tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối.")
-    st.write("8) Lãi vay được tính hàng tháng trên dư nợ sau khi rút vay đầu tháng.")
-    st.write("9) Thuế CIT là thuế thu nhập doanh nghiệp.")
-    st.write("10) Số ngày công nợ là số ngày chậm thanh toán trung bình sau mỗi lần nghiệm thu.")
+    st.write("1) Giá trị hợp đồng nhập ở đây là giá trị hợp đồng gốc trước chiết khấu.")
+    st.write("2) Chiết khấu hợp đồng được nhập theo % giá trị hợp đồng gốc và sẽ làm giảm doanh thu thực nhận.")
+    st.write("3) Tạm ứng CĐT ban đầu được tính theo % giá trị hợp đồng sau chiết khấu.")
+    st.write("4) Giai đoạn nghiệm thu tối đa 5 giai đoạn, có thể để trống các giai đoạn cuối.")
+    st.write("5) Mỗi giai đoạn cần nhập thời lượng thi công, tỷ lệ thanh toán (% giá trị hợp đồng) và tỷ lệ chi tiền đầu giai đoạn (% giá vốn).")
+    st.write("6) Tổng tỷ lệ thanh toán của các giai đoạn phải bằng đúng 100% giá trị hợp đồng.")
+    st.write("7) Tổng tỷ lệ chi tiền đầu các giai đoạn phải bằng đúng 100% giá vốn.")
+    st.write("8) Hạn mức vay theo giai đoạn được nhập theo % giá vốn. Hệ thống sẽ ưu tiên dùng tiền sẵn có từ CĐT/thu trước đó trước, phần thiếu mới rút vay, phần thiếu còn lại mới dùng VCSH.")
+    st.write("9) Có thể chọn 2 kiểu trả gốc vay: trả đều theo tháng hoặc trả toàn bộ tại tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối.")
+    st.write("10) Lãi vay được tính hàng tháng trên dư nợ sau khi rút vay đầu tháng.")
+    st.write("11) Lạm phát và lãi suất ngân hàng benchmark được dùng để quy đổi về lãi suất thực theo Fisher và so sánh với IRR vốn chủ.")
+    st.write("12) MOIC / Equity Multiple và Net Profit Margin cũng được đưa vào phần đánh giá sơ bộ.")
 
 
 # =========================
@@ -87,17 +89,27 @@ with st.expander("Giải thích nhanh cách nhập liệu", expanded=False):
 st.subheader("1. Thông tin cơ bản")
 
 deal_value = st.number_input(
-    "Giá trị hợp đồng (VND)",
+    "Giá trị hợp đồng gốc (VND)",
     min_value=0,
     value=10_000_000_000,
     step=1_000_000,
     format="%d",
-    help="Tổng giá trị hợp đồng với khách hàng.",
+    help="Tổng giá trị hợp đồng trước khi áp dụng chiết khấu.",
 )
 st.caption("Hiển thị: " + format_vn(deal_value, 0) + " đ")
 
+contract_discount_pct = st.number_input(
+    "Chiết khấu hợp đồng (% theo giá trị hợp đồng gốc)",
+    min_value=0.0,
+    max_value=100.0,
+    value=0.0,
+    step=0.1,
+    help="Chiết khấu làm giảm doanh thu thực nhận từ khách hàng.",
+)
+st.caption("Hiển thị: " + format_vn(contract_discount_pct, 2) + " %")
+
 cost_pct = st.number_input(
-    "Tỷ lệ giá vốn (% theo giá trị hợp đồng)",
+    "Tỷ lệ giá vốn (% theo giá trị hợp đồng gốc)",
     min_value=0.0,
     max_value=100.0,
     value=70.0,
@@ -106,7 +118,7 @@ cost_pct = st.number_input(
 st.caption("Hiển thị: " + format_vn(cost_pct, 2) + " %")
 
 salvage_pct = st.number_input(
-    "Giá trị thu hồi cuối kỳ (% theo giá trị hợp đồng)",
+    "Giá trị thu hồi cuối kỳ (% theo giá trị hợp đồng gốc)",
     min_value=0.0,
     max_value=100.0,
     value=0.0,
@@ -133,26 +145,30 @@ avg_dso_days = st.number_input(
 )
 st.caption("Hiển thị: " + format_vn(avg_dso_days, 0) + " ngày")
 
+discount_amount_preview = deal_value * contract_discount_pct / 100.0
+net_contract_value_preview = deal_value - discount_amount_preview
 total_cost_preview = deal_value * cost_pct / 100.0
 salvage_preview = deal_value * salvage_pct / 100.0
 
-col_basic_1, col_basic_2 = st.columns(2)
-col_basic_1.metric("Tổng giá vốn ước tính", format_vn(total_cost_preview, 0) + " đ")
-col_basic_2.metric("Giá trị thu hồi cuối kỳ", format_vn(salvage_preview, 0) + " đ")
+col_basic_1, col_basic_2, col_basic_3, col_basic_4 = st.columns(4)
+col_basic_1.metric("Chiết khấu hợp đồng", format_vn(discount_amount_preview, 0) + " đ")
+col_basic_2.metric("Giá trị hợp đồng sau CK", format_vn(net_contract_value_preview, 0) + " đ")
+col_basic_3.metric("Tổng giá vốn ước tính", format_vn(total_cost_preview, 0) + " đ")
+col_basic_4.metric("Giá trị thu hồi cuối kỳ", format_vn(salvage_preview, 0) + " đ")
 
 
 # =========================
-# 2. NGUỒN VỐN
+# 2. NGUỒN VỐN VÀ BENCHMARK
 # =========================
-st.subheader("2. Nguồn vốn")
+st.subheader("2. Nguồn vốn và benchmark")
 
 owner_advance_pct = st.number_input(
-    "Tỷ lệ tạm ứng chủ đầu tư ban đầu (% theo giá trị hợp đồng)",
+    "Tỷ lệ tạm ứng chủ đầu tư ban đầu (% theo giá trị hợp đồng sau chiết khấu)",
     min_value=0.0,
     max_value=100.0,
     value=10.0,
     step=0.1,
-    help="Đây là khoản tạm ứng ban đầu của chủ đầu tư, tính theo % giá trị hợp đồng.",
+    help="Khoản tạm ứng ban đầu của chủ đầu tư, tính trên giá trị hợp đồng sau chiết khấu.",
 )
 st.caption("Hiển thị: " + format_vn(owner_advance_pct, 2) + " %")
 
@@ -165,6 +181,26 @@ interest_rate = st.number_input(
 )
 st.caption("Hiển thị: " + format_vn(interest_rate, 2) + " %")
 
+bank_rate_pct = st.number_input(
+    "Lãi suất ngân hàng benchmark năm (%)",
+    min_value=0.0,
+    max_value=100.0,
+    value=6.0,
+    step=0.1,
+    help="Dùng để so sánh với IRR vốn chủ thực sau khi quy đổi theo Fisher.",
+)
+st.caption("Hiển thị: " + format_vn(bank_rate_pct, 2) + " %")
+
+inflation_rate_pct = st.number_input(
+    "Lạm phát năm (%)",
+    min_value=0.0,
+    max_value=100.0,
+    value=4.0,
+    step=0.1,
+    help="Dùng để quy đổi lãi suất danh nghĩa sang lãi suất thực theo Fisher.",
+)
+st.caption("Hiển thị: " + format_vn(inflation_rate_pct, 2) + " %")
+
 principal_repayment_mode = st.selectbox(
     "Phương thức trả gốc vay",
     options=[
@@ -174,8 +210,13 @@ principal_repayment_mode = st.selectbox(
     index=0,
 )
 
-owner_advance_amount_preview = deal_value * owner_advance_pct / 100.0
-st.metric("Giá trị tạm ứng CĐT ban đầu", format_vn(owner_advance_amount_preview, 0) + " đ")
+owner_advance_amount_preview = net_contract_value_preview * owner_advance_pct / 100.0
+col_capital_1, col_capital_2 = st.columns(2)
+col_capital_1.metric("Giá trị tạm ứng CĐT ban đầu", format_vn(owner_advance_amount_preview, 0) + " đ")
+col_capital_2.metric(
+    "Lãi suất NH thực theo Fisher",
+    format_vn((((1 + bank_rate_pct / 100.0) / (1 + inflation_rate_pct / 100.0)) - 1) * 100, 2) + " %",
+)
 
 
 # =========================
@@ -291,7 +332,7 @@ for i in range(4):
 st.subheader("5. Hậu mãi / bảo hành / bảo hiểm")
 
 after_sales_pct = st.number_input(
-    "Chi phí bảo hành / bảo hiểm hậu mãi (% theo giá trị hợp đồng)",
+    "Chi phí bảo hành / bảo hiểm hậu mãi (% theo giá trị hợp đồng gốc)",
     min_value=0.0,
     max_value=100.0,
     value=5.0,
@@ -437,6 +478,9 @@ if run_button:
         # -------------------------
         # Basic validations
         # -------------------------
+        if contract_discount_pct > 100:
+            errors.append("Chiết khấu hợp đồng không thể lớn hơn 100% giá trị hợp đồng.")
+
         if cost_pct > 100:
             errors.append("Tỷ lệ giá vốn không thể lớn hơn 100%.")
 
@@ -447,10 +491,16 @@ if run_button:
             errors.append("Thuế CIT không thể lớn hơn 100%.")
 
         if owner_advance_pct > 100:
-            errors.append("Tỷ lệ tạm ứng chủ đầu tư ban đầu không thể lớn hơn 100% giá trị hợp đồng.")
+            errors.append("Tỷ lệ tạm ứng chủ đầu tư ban đầu không thể lớn hơn 100% giá trị hợp đồng sau chiết khấu.")
 
         if after_sales_pct > 100:
             errors.append("Chi phí bảo hành / bảo hiểm hậu mãi không thể lớn hơn 100% giá trị hợp đồng.")
+
+        if bank_rate_pct > 100:
+            errors.append("Lãi suất ngân hàng benchmark không thể lớn hơn 100%.")
+
+        if inflation_rate_pct > 100:
+            errors.append("Lạm phát không thể lớn hơn 100%.")
 
         if warranty_months < 0:
             errors.append("Thời hạn bảo hành / hậu mãi không được âm.")
@@ -462,12 +512,15 @@ if run_button:
 
         inputs = {
             "deal_value": float(deal_value),
+            "contract_discount_pct": float(contract_discount_pct),
             "cost_pct": float(cost_pct),
             "salvage_pct": float(salvage_pct),
             "tax_rate": float(tax_rate),
             "avg_dso_days": int(avg_dso_days),
             "owner_advance_pct": float(owner_advance_pct),
             "interest_rate": float(interest_rate),
+            "bank_rate_pct": float(bank_rate_pct),
+            "inflation_rate_pct": float(inflation_rate_pct),
             "principal_repayment_mode": principal_repayment_mode,
             "stages": stages,
             "debt_draw_schedule": debt_draw_schedule,
@@ -485,6 +538,11 @@ if run_button:
 
         equity_irr = result.get("equity_irr_annual")
         project_irr = result.get("project_irr_annual")
+        equity_real_irr = result.get("equity_real_irr_annual")
+        project_real_irr = result.get("project_real_irr_annual")
+        bank_real_rate_annual = result.get("bank_real_rate_annual")
+        real_irr_spread_vs_bank = result.get("real_irr_spread_vs_bank")
+
         payback_month = result.get("payback_month")
         payback_message = result.get("payback_message")
         peak_equity = result.get("peak_equity_at_risk")
@@ -497,22 +555,24 @@ if run_button:
         net_profit_margin = result.get("net_profit_margin")
         total_interest = result.get("total_interest")
         total_cit = result.get("total_cit")
+        contract_discount_amount = result.get("contract_discount_amount")
+        net_contract_value = result.get("net_contract_value")
 
         col1, col2, col3, col4 = st.columns(4)
 
         col1.metric(
-            "IRR vốn chủ",
+            "IRR vốn chủ (danh nghĩa)",
             format_vn(equity_irr, 2) + " %" if equity_irr is not None else "Không tính được",
         )
 
         col2.metric(
-            "Equity Multiple",
-            format_vn(equity_multiple, 2) + "x" if equity_multiple is not None else "Không tính được",
+            "IRR vốn chủ thực",
+            format_vn(equity_real_irr, 2) + " %" if equity_real_irr is not None else "Không tính được",
         )
 
         col3.metric(
-            "MOIC",
-            format_vn(moic, 2) + "x" if moic is not None else "Không tính được",
+            "Spread IRR thực - LS NH thực",
+            format_vn(real_irr_spread_vs_bank, 2) + " điểm %" if real_irr_spread_vs_bank is not None else "Không tính được",
         )
 
         col4.metric(
@@ -523,43 +583,75 @@ if run_button:
         col5, col6, col7, col8 = st.columns(4)
 
         col5.metric(
-            "IRR dự án",
+            "IRR dự án (danh nghĩa)",
             format_vn(project_irr, 2) + " %" if project_irr is not None else "Không tính được",
         )
 
         col6.metric(
-            "Net Profit Margin",
-            format_vn(net_profit_margin, 2) + " %" if net_profit_margin is not None else "Không tính được",
+            "IRR dự án thực",
+            format_vn(project_real_irr, 2) + " %" if project_real_irr is not None else "Không tính được",
         )
 
         col7.metric(
-            "Mức vốn bị giam lớn nhất",
-            format_vn(peak_equity, 0) + " đ" if peak_equity is not None else "-",
+            "Lãi suất NH thực",
+            format_vn(bank_real_rate_annual, 2) + " %" if bank_real_rate_annual is not None else "Không tính được",
         )
 
         col8.metric(
-            "Dư nợ vay lớn nhất",
-            format_vn(peak_debt, 0) + " đ" if peak_debt is not None else "-",
+            "Net Profit Margin",
+            format_vn(net_profit_margin, 2) + " %" if net_profit_margin is not None else "Không tính được",
         )
 
         col9, col10, col11, col12 = st.columns(4)
 
         col9.metric(
-            "Tổng giá vốn",
-            format_vn(total_cost, 0) + " đ" if total_cost is not None else "-",
+            "Equity Multiple",
+            format_vn(equity_multiple, 2) + "x" if equity_multiple is not None else "Không tính được",
         )
 
         col10.metric(
+            "MOIC",
+            format_vn(moic, 2) + "x" if moic is not None else "Không tính được",
+        )
+
+        col11.metric(
+            "Mức vốn bị giam lớn nhất",
+            format_vn(peak_equity, 0) + " đ" if peak_equity is not None else "-",
+        )
+
+        col12.metric(
+            "Dư nợ vay lớn nhất",
+            format_vn(peak_debt, 0) + " đ" if peak_debt is not None else "-",
+        )
+
+        col13, col14, col15, col16 = st.columns(4)
+
+        col13.metric(
+            "Giá trị HĐ sau chiết khấu",
+            format_vn(net_contract_value, 0) + " đ" if net_contract_value is not None else "-",
+        )
+
+        col14.metric(
+            "Tổng chiết khấu hợp đồng",
+            format_vn(contract_discount_amount, 0) + " đ" if contract_discount_amount is not None else "-",
+        )
+
+        col15.metric(
             "Lợi nhuận ròng ước tính",
             format_vn(net_profit, 0) + " đ" if net_profit is not None else "-",
         )
 
-        col11.metric(
+        col16.metric(
+            "Tổng giá vốn",
+            format_vn(total_cost, 0) + " đ" if total_cost is not None else "-",
+        )
+
+        col17, col18 = st.columns(2)
+        col17.metric(
             "Tổng lãi vay",
             format_vn(total_interest, 0) + " đ" if total_interest is not None else "-",
         )
-
-        col12.metric(
+        col18.metric(
             "Thuế CIT",
             format_vn(total_cit, 0) + " đ" if total_cit is not None else "-",
         )
@@ -576,6 +668,10 @@ if run_button:
         if decision_basis:
             st.caption(decision_basis)
 
+        fisher_basis = result.get("fisher_basis")
+        if fisher_basis:
+            st.caption(fisher_basis)
+
         source_logic_basis = result.get("source_of_funds_basis")
         if source_logic_basis:
             st.caption(source_logic_basis)
@@ -590,6 +686,33 @@ if run_button:
             else:
                 st.caption(payback_message)
 
+        st.subheader("Giải thích các trụ đánh giá")
+
+        real_irr_explanation = result.get("real_irr_explanation")
+        if real_irr_explanation:
+            st.write("**1. IRR vốn chủ thực vs lãi suất NH thực**")
+            st.write(real_irr_explanation)
+
+        net_profit_margin_explanation = result.get("net_profit_margin_explanation")
+        if net_profit_margin_explanation:
+            st.write("**2. Net Profit Margin**")
+            st.write(net_profit_margin_explanation)
+
+        moic_explanation = result.get("moic_explanation")
+        if moic_explanation:
+            st.write("**3. MOIC**")
+            st.write(moic_explanation)
+
+        equity_multiple_explanation = result.get("equity_multiple_explanation")
+        if equity_multiple_explanation:
+            st.write("**4. Equity Multiple**")
+            st.write(equity_multiple_explanation)
+
+        if result.get("evaluation_table"):
+            st.subheader("Bảng đánh giá sơ bộ")
+            eval_df = pd.DataFrame(result["evaluation_table"])
+            st.dataframe(eval_df, use_container_width=True)
+
         if result.get("stage_plan"):
             st.subheader("Kế hoạch các giai đoạn")
             stage_df = pd.DataFrame(result["stage_plan"])
@@ -603,7 +726,9 @@ if run_button:
                 "collection_month": "Tháng thu tiền",
                 "payment_pct": "Thanh toán (% HĐ)",
                 "cost_out_pct": "Chi tiền đầu kỳ (% GV)",
-                "gross_billing_value": "Billing gross",
+                "gross_contract_billing_value": "Billing gốc trước CK",
+                "stage_discount_amount": "Chiết khấu phân bổ",
+                "net_stage_billing_value": "Billing sau CK",
                 "advance_offset": "Cấn trừ tạm ứng",
                 "net_collection_value": "Thu tiền thực tế",
                 "stage_cost": "Chi phí đầu kỳ",
@@ -614,7 +739,9 @@ if run_button:
             stage_df_display = stage_df.rename(columns=rename_map)
 
             money_cols = [
-                "Billing gross",
+                "Billing gốc trước CK",
+                "Chiết khấu phân bổ",
+                "Billing sau CK",
                 "Cấn trừ tạm ứng",
                 "Thu tiền thực tế",
                 "Chi phí đầu kỳ",
@@ -704,14 +831,16 @@ if run_button:
             st.dataframe(df_display, use_container_width=True)
 
         with st.expander("Giải thích các chỉ số", expanded=False):
+            st.write("- **IRR vốn chủ thực** = IRR vốn chủ danh nghĩa sau khi loại trừ lạm phát theo Fisher.")
+            st.write("- **Lãi suất NH thực** = Lãi suất ngân hàng benchmark danh nghĩa sau khi loại trừ lạm phát theo Fisher.")
+            st.write("- **Spread IRR thực - LS NH thực** = Phần chênh vượt thêm của hiệu quả đầu tư so với benchmark gửi ngân hàng.")
             st.write("- **Equity Multiple** = Tổng tiền trả về cho vốn chủ / Tổng vốn chủ đã bơm vào.")
             st.write("- **MOIC** = Multiple on Invested Capital. Trong mô hình hiện tại, chỉ số này cùng cơ sở với Equity Multiple nên cho cùng kết quả.")
-            st.write("- **Net Profit Margin** = Lợi nhuận ròng / Giá trị hợp đồng.")
+            st.write("- **Net Profit Margin** = Lợi nhuận ròng / Giá trị hợp đồng sau chiết khấu.")
             st.write("- **Thời gian hoàn vốn** = Tháng đầu tiên mà dòng tiền vốn chủ lũy kế quay về mức không âm, sau khi đã từng phải bơm vốn.")
-            st.write("- **IRR vốn chủ** phản ánh suất sinh lời của vốn chủ sở hữu.")
-            st.write("- **IRR dự án** phản ánh suất sinh lời của dự án trước tác động của cấu trúc tài trợ.")
             st.write("- **Chi phí đầu giai đoạn** được tài trợ theo thứ tự: tiền sẵn có/CĐT -> vay của giai đoạn đó -> VCSH.")
             st.write("- **Trả gốc vay** có 2 lựa chọn: trả đều theo tháng hoặc trả toàn bộ vào tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối.")
+            st.write("- **Chiết khấu hợp đồng** làm giảm doanh thu thực nhận và được phân bổ tỷ lệ theo từng giai đoạn thanh toán.")
 
     except Exception as e:
         st.error(f"Có lỗi khi xử lý dữ liệu đầu vào hoặc tính toán: {str(e)}")
