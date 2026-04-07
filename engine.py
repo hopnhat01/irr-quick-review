@@ -40,46 +40,50 @@ def get_decision(irr_annual_pct):
 
 def build_model(inputs):
     # =========================
-    # 1. ĐỌC INPUT
+    # 1. INPUT
     # =========================
     deal_value = float(inputs["deal_value"])
     cost_pct = float(inputs["cost_pct"]) / 100.0
     salvage_pct = float(inputs.get("salvage_pct", 0.0)) / 100.0
-    cit_rate = float(inputs.get("tax_rate", 0.0)) / 100.0  # CIT
+    cit_rate = float(inputs.get("tax_rate", 0.0)) / 100.0
     avg_dso_days = int(inputs.get("avg_dso_days", 0))
 
-    owner_advance_pct = float(inputs.get("owner_advance_pct", 0.0)) / 100.0  # % theo giá vốn
-    interest_rate_annual = float(inputs.get("interest_rate", 0.0)) / 100.0
+    # ĐÃ ĐỔI: % theo GIÁ TRỊ HỢP ĐỒNG
+    owner_advance_pct = float(inputs.get("owner_advance_pct", 0.0)) / 100.0
 
-    after_sales_pct = float(inputs.get("after_sales_pct", 0.0)) / 100.0  # % theo giá trị hợp đồng
+    interest_rate_annual = float(inputs.get("interest_rate", 0.0)) / 100.0
+    after_sales_pct = float(inputs.get("after_sales_pct", 0.0)) / 100.0
     warranty_months = int(inputs.get("warranty_months", 0))
 
     raw_stages = inputs.get("stages", [])
     raw_debt_draw_schedule = inputs.get("debt_draw_schedule", [])
 
+    # =========================
+    # 2. VALIDATION
+    # =========================
     if deal_value <= 0:
         raise ValueError("Giá trị hợp đồng phải lớn hơn 0.")
 
-    if cost_pct < 0 or cost_pct > 1:
+    if not (0 <= cost_pct <= 1):
         raise ValueError("Tỷ lệ giá vốn phải nằm trong khoảng 0% đến 100%.")
 
-    if salvage_pct < 0 or salvage_pct > 1:
+    if not (0 <= salvage_pct <= 1):
         raise ValueError("Giá trị thu hồi cuối kỳ phải nằm trong khoảng 0% đến 100%.")
 
-    if cit_rate < 0 or cit_rate > 1:
+    if not (0 <= cit_rate <= 1):
         raise ValueError("Thuế CIT phải nằm trong khoảng 0% đến 100%.")
 
-    if owner_advance_pct < 0 or owner_advance_pct > 1:
-        raise ValueError("Tỷ lệ tạm ứng CĐT phải nằm trong khoảng 0% đến 100% giá vốn.")
+    if not (0 <= owner_advance_pct <= 1):
+        raise ValueError("Tỷ lệ tạm ứng CĐT phải nằm trong khoảng 0% đến 100% giá trị hợp đồng.")
 
-    if after_sales_pct < 0 or after_sales_pct > 1:
+    if not (0 <= after_sales_pct <= 1):
         raise ValueError("Tỷ lệ bảo hành / bảo hiểm hậu mãi phải nằm trong khoảng 0% đến 100% giá trị hợp đồng.")
 
     if warranty_months < 0:
         raise ValueError("Thời hạn bảo hành không được âm.")
 
     # =========================
-    # 2. CHUẨN HÓA STAGES
+    # 3. CHUẨN HÓA STAGES
     # =========================
     stages = []
     for s in raw_stages:
@@ -88,9 +92,9 @@ def build_model(inputs):
         name = str(s.get("name", f"Giai đoạn {len(stages) + 1}")).strip() or f"Giai đoạn {len(stages) + 1}"
 
         if duration_months <= 0:
-            raise ValueError(f"{name}: thời lượng giai đoạn phải > 0.")
+            raise ValueError(f"{name}: thời lượng giai đoạn phải lớn hơn 0.")
         if payment_pct <= 0:
-            raise ValueError(f"{name}: tỷ lệ thanh toán phải > 0.")
+            raise ValueError(f"{name}: tỷ lệ thanh toán phải lớn hơn 0.")
 
         stages.append(
             {
@@ -102,28 +106,28 @@ def build_model(inputs):
         )
 
     if not stages:
-        raise ValueError("Phải có ít nhất 1 giai đoạn.")
+        raise ValueError("Phải có ít nhất 1 giai đoạn nghiệm thu.")
 
     if len(stages) > 5:
-        raise ValueError("Tối đa 5 giai đoạn.")
+        raise ValueError("Tối đa 5 giai đoạn nghiệm thu.")
 
     total_payment_pct = sum(s["payment_pct"] for s in stages)
     if abs(total_payment_pct - 100.0) > 1e-6:
         raise ValueError("Tổng tỷ lệ thanh toán các giai đoạn phải bằng đúng 100% giá trị hợp đồng.")
 
     # =========================
-    # 3. THÔNG SỐ CƠ SỞ
+    # 4. THÔNG SỐ CƠ SỞ
     # =========================
     total_cost = deal_value * cost_pct
     salvage_value_total = deal_value * salvage_pct
-    owner_advance_amount = total_cost * owner_advance_pct
+    owner_advance_amount = deal_value * owner_advance_pct
     after_sales_total = deal_value * after_sales_pct
 
     monthly_interest_rate = interest_rate_annual / 12.0
     delay_month = math.ceil(avg_dso_days / 30.0)
 
     # =========================
-    # 4. TIMELINE CÁC GIAI ĐOẠN
+    # 5. TIMELINE THEO GIAI ĐOẠN
     # =========================
     stage_plan = []
     month_cursor = 1
@@ -158,12 +162,12 @@ def build_model(inputs):
     timeline = list(range(horizon + 1))
 
     # =========================
-    # 5. KHỞI TẠO MẢNG
+    # 6. KHỞI TẠO MẢNG
     # =========================
-    customer_advance = [0.0] * (horizon + 1)   # tiền tạm ứng từ CĐT tại T0
-    billing = [0.0] * (horizon + 1)            # nghiệm thu / hóa đơn gross
-    collections = [0.0] * (horizon + 1)        # tiền thu NET sau khi trừ phần đã tạm ứng
-    cost = [0.0] * (horizon + 1)               # chi phí đầu giai đoạn
+    customer_advance = [0.0] * (horizon + 1)   # tiền tạm ứng CĐT
+    billing = [0.0] * (horizon + 1)            # nghiệm thu gross
+    collections = [0.0] * (horizon + 1)        # thu tiền net
+    cost = [0.0] * (horizon + 1)               # chi đầu kỳ
     after_sales = [0.0] * (horizon + 1)
     debt_draw = [0.0] * (horizon + 1)
     interest = [0.0] * (horizon + 1)
@@ -177,16 +181,17 @@ def build_model(inputs):
     opening_cash = [0.0] * (horizon + 1)
     closing_cash = [0.0] * (horizon + 1)
     debt_balance_series = [0.0] * (horizon + 1)
+    ar_balance = [0.0] * (horizon + 1)
 
     # =========================
-    # 6. TẠM ỨNG CĐT TẠI T0
+    # 7. TẠM ỨNG CĐT TẠI T0
     # =========================
     customer_advance[0] = owner_advance_amount
 
     # =========================
-    # 7. BILLING VÀ COLLECTIONS
-    #    - Billing gross theo payment_pct của từng stage
-    #    - Collections net sau khi trừ dần khoản tạm ứng CĐT
+    # 8. BILLING VÀ COLLECTION
+    #    - khách thanh toán theo giá trị hợp đồng
+    #    - tạm ứng CĐT được trừ dần khỏi các đợt thu sau
     # =========================
     for stage in stage_plan:
         billing[stage["end_month"]] += stage["gross_billing_value"]
@@ -205,15 +210,10 @@ def build_model(inputs):
         stage["net_collection_value"] = net_collection
 
     # =========================
-    # 8. VAY THEO GIAI ĐOẠN
-    #    Logic khớp input app hiện tại:
-    #    - T0: có tạm ứng CĐT
-    #    - Stage 1 bắt đầu vay GĐ1
-    #    - Chi phí đầu stage 1 = tạm ứng + vay GĐ1
-    #    - Chi phí đầu stage 2 = vay GĐ2
-    #    - Chi phí đầu stage 3 = vay GĐ3
-    #    - Chi phí đầu stage 4 = vay GĐ4
-    #    - Nếu tổng này chưa đủ 100% giá vốn => phần còn thiếu dồn vào đầu stage cuối
+    # 9. LỊCH GIẢI NGÂN VAY
+    #    - tối đa 4 đợt
+    #    - % theo GIÁ VỐN
+    #    - giải ngân ở đầu kỳ giai đoạn đó
     # =========================
     debt_draw_amount_by_stage = {i: 0.0 for i in range(1, 6)}
 
@@ -223,66 +223,63 @@ def build_model(inputs):
 
         if draw_pct_cost < 0:
             raise ValueError(f"Giải ngân vay giai đoạn {stage_no} không được âm.")
-
         if stage_no < 1 or stage_no > 4:
-            raise ValueError("Giải ngân vay chỉ được phép từ giai đoạn 1 đến giai đoạn 4 theo input hiện tại.")
-
+            raise ValueError("Giải ngân vay chỉ được phép từ giai đoạn 1 đến giai đoạn 4.")
         if stage_no > len(stage_plan):
             continue
 
-        amt = total_cost * (draw_pct_cost / 100.0)
-        debt_draw_amount_by_stage[stage_no] += amt
+        draw_amount = total_cost * (draw_pct_cost / 100.0)
+        debt_draw_amount_by_stage[stage_no] += draw_amount
 
-    # Ghi lịch giải ngân vay vào timeline
     for stage in stage_plan:
         stage_no = stage["stage_no"]
-        start_month = stage["start_month"]
-
         if stage_no <= 4:
-            debt_draw[start_month] += debt_draw_amount_by_stage.get(stage_no, 0.0)
+            debt_draw[stage["start_month"]] += debt_draw_amount_by_stage.get(stage_no, 0.0)
+
+    total_debt_draw_amount = sum(debt_draw_amount_by_stage.values())
 
     # =========================
-    # 9. CHI PHÍ ĐẦU GIAI ĐOẠN
-    #    - Stage 1: owner advance + debt GĐ1
-    #    - Stage 2: debt GĐ2
-    #    - Stage 3: debt GĐ3
-    #    - Stage 4: debt GĐ4
-    #    - Stage 5: phần còn lại (nếu có)
+    # 10. CHI PHÍ THEO LOGIC MỚI
+    #     - Giai đoạn 0: dùng tạm ứng CĐT
+    #     - Giai đoạn 1..4: chi đầu kỳ theo khoản vay của giai đoạn đó
+    #     - Nếu chưa đủ tổng giá vốn: phần còn thiếu dồn vào đầu giai đoạn cuối
     # =========================
+    remaining_cost = total_cost
+
+    # stage 0 cost ở T0
+    stage0_cost = min(owner_advance_amount, remaining_cost)
+    cost[0] += stage0_cost
+    remaining_cost -= stage0_cost
+
     stage_cost_amount = {i: 0.0 for i in range(1, len(stage_plan) + 1)}
 
-    if len(stage_plan) >= 1:
-        stage_cost_amount[1] += owner_advance_amount
-        stage_cost_amount[1] += debt_draw_amount_by_stage.get(1, 0.0)
+    for stage in stage_plan:
+        stage_no = stage["stage_no"]
+        if stage_no <= 4:
+            alloc = min(debt_draw_amount_by_stage.get(stage_no, 0.0), remaining_cost)
+            stage_cost_amount[stage_no] += alloc
+            remaining_cost -= alloc
 
-    if len(stage_plan) >= 2:
-        stage_cost_amount[2] += debt_draw_amount_by_stage.get(2, 0.0)
-
-    if len(stage_plan) >= 3:
-        stage_cost_amount[3] += debt_draw_amount_by_stage.get(3, 0.0)
-
-    if len(stage_plan) >= 4:
-        stage_cost_amount[4] += debt_draw_amount_by_stage.get(4, 0.0)
-
-    planned_cost_allocated = sum(stage_cost_amount.values())
-    residual_cost = total_cost - planned_cost_allocated
-
-    # Nếu lịch funding chưa đủ 100% giá vốn, dồn phần còn lại vào đầu giai đoạn cuối
-    if residual_cost > 1e-9:
+    if remaining_cost > 1e-9:
         last_stage_no = stage_plan[-1]["stage_no"]
-        stage_cost_amount[last_stage_no] += residual_cost
-    elif residual_cost < -1e-9:
-        raise ValueError("Tạm ứng CĐT + tổng giải ngân vay đang vượt tổng giá vốn. Kiểm tra lại input.")
+        stage_cost_amount[last_stage_no] += remaining_cost
+        remaining_cost = 0.0
+
+    # kiểm tra funding không vượt chi phí quá nhiều
+    if owner_advance_amount + total_debt_draw_amount > total_cost + 1e-9:
+        raise ValueError(
+            "Tạm ứng CĐT cộng với tổng giải ngân vay đang lớn hơn tổng giá vốn. "
+            "Hãy giảm tạm ứng hoặc giảm tỷ lệ giải ngân vay."
+        )
 
     for stage in stage_plan:
         stage_no = stage["stage_no"]
-        start_month = stage["start_month"]
         c = stage_cost_amount.get(stage_no, 0.0)
-        cost[start_month] += c
+        cost[stage["start_month"]] += c
         stage["stage_cost"] = c
 
     # =========================
-    # 10. BẢO HÀNH / BẢO HIỂM HẬU MÃI
+    # 11. HẬU MÃI / BẢO HÀNH / BẢO HIỂM
     # =========================
     if after_sales_total > 0 and warranty_months > 0:
         monthly_after_sales = after_sales_total / warranty_months
@@ -290,15 +287,15 @@ def build_model(inputs):
             after_sales[t] += monthly_after_sales
 
     # =========================
-    # 11. THU HỒI CUỐI KỲ
+    # 12. THU HỒI CUỐI KỲ
     # =========================
     salvage[horizon] += salvage_value_total
 
     # =========================
-    # 12. PASS 1: TÍNH DƯ NỢ, LÃI, GỐC
-    #     - Draw ở đầu tháng
-    #     - Lãi tính trên dư nợ sau khi draw tháng đó
-    #     - Gốc trả 1 lần ở kỳ collection cuối cùng
+    # 13. PASS 1: TÍNH LÃI VÀ GỐC
+    #     - draw ở đầu tháng
+    #     - lãi hàng tháng trên dư nợ sau draw
+    #     - gốc trả một lần ở kỳ thu cuối cùng
     # =========================
     debt_balance = 0.0
     peak_debt = 0.0
@@ -309,19 +306,16 @@ def build_model(inputs):
 
         peak_debt = max(peak_debt, debt_balance)
 
-        # Trả lãi định kỳ hàng tháng
         interest[t] = debt_balance * monthly_interest_rate if debt_balance > 0 else 0.0
 
-        # Trả gốc cuối cùng khi tới kỳ thu tiền cuối của dự án
         if t == last_collection_month and debt_balance > 0:
             principal[t] = debt_balance
             debt_balance = 0.0
 
-        debt_balance_series[t] = debt_balance
-
     # =========================
-    # 13. THUẾ CIT
-    #     Đơn giản hóa: thanh toán cuối horizon
+    # 14. THUẾ CIT
+    #     - đơn giản hóa: nộp cuối horizon
+    #     - cho phép tax shield từ lãi vay
     # =========================
     total_interest = sum(interest)
     taxable_profit = deal_value + salvage_value_total - total_cost - after_sales_total - total_interest
@@ -329,10 +323,10 @@ def build_model(inputs):
     tax[horizon] += total_cit
 
     # =========================
-    # 14. PASS 2: WATERFALL CASH THỰC TẾ
-    #     - Giữ cash lại trong dự án
-    #     - Chỉ nếu âm thì equity bơm thêm
-    #     - Chỉ trả equity_out ở tháng cuối nếu còn tiền dư
+    # 15. PASS 2: WATERFALL TIỀN MẶT
+    #     - giữ tiền trong dự án
+    #     - thiếu thì equity bơm
+    #     - cuối cùng còn dư mới trả về equity
     # =========================
     cash_balance = 0.0
     debt_balance = 0.0
@@ -340,6 +334,8 @@ def build_model(inputs):
 
     project_cf = [0.0] * (horizon + 1)
     equity_cf = [0.0] * (horizon + 1)
+
+    running_ar = 0.0
 
     for t in timeline:
         opening_cash[t] = cash_balance
@@ -354,18 +350,14 @@ def build_model(inputs):
 
         cash_after = cash_balance + inflow - outflow
 
-        # Nếu âm -> vốn chủ bơm vào để bù thiếu hụt
         if cash_after < 0:
             equity_in[t] = -cash_after
             cash_after = 0.0
 
-        # Theo logic mới: không trả về equity mỗi tháng,
-        # mà giữ lại trong dự án để nuôi các stage tiếp theo
         if t == horizon and cash_after > 0:
             equity_out[t] = cash_after
             cash_after = 0.0
 
-        # Cập nhật debt balance theo principal
         if principal[t] > 0:
             debt_balance -= principal[t]
             if debt_balance < 0:
@@ -375,14 +367,18 @@ def build_model(inputs):
         closing_cash[t] = cash_after
         cash_balance = cash_after
 
-        # Project cash flow: dòng tiền dự án trước financing
+        # AR balance
+        running_ar += billing[t] - collections[t]
+        ar_balance[t] = running_ar
+
+        # Project CF: không có debt/equity
         project_cf[t] = customer_advance[t] + collections[t] + salvage[t] - cost[t] - after_sales[t] - tax[t]
 
-        # Equity cash flow: chỉ nhìn phần vốn chủ bơm / thu hồi
+        # Equity CF: chỉ nhìn tiền equity thực bơm / rút
         equity_cf[t] = -equity_in[t] + equity_out[t]
 
     # =========================
-    # 15. CÁC CHỈ SỐ
+    # 16. CHỈ SỐ
     # =========================
     project_irr_month = safe_irr(project_cf)
     equity_irr_month = safe_irr(equity_cf)
@@ -404,18 +400,23 @@ def build_model(inputs):
 
     running_equity_at_risk = 0.0
     peak_equity_at_risk = 0.0
+    total_equity_in = 0.0
+    total_equity_out = 0.0
+
     for t in timeline:
-        running_equity_at_risk += equity_in[t]
-        running_equity_at_risk -= equity_out[t]
+        total_equity_in += equity_in[t]
+        total_equity_out += equity_out[t]
+        running_equity_at_risk += equity_in[t] - equity_out[t]
         peak_equity_at_risk = max(peak_equity_at_risk, running_equity_at_risk)
+
+    equity_multiple = None
+    if total_equity_in > 0:
+        equity_multiple = total_equity_out / total_equity_in
 
     decision = get_decision(equity_irr_annual)
 
-    # =========================
-    # 16. BỔ SUNG THÔNG TIN STAGE PLAN
-    # =========================
+    # stage plan enrich
     for stage in stage_plan:
-        stage["gross_billing_value"] = stage.get("gross_billing_value", 0.0)
         stage["advance_offset"] = stage.get("advance_offset", 0.0)
         stage["net_collection_value"] = stage.get("net_collection_value", 0.0)
         stage["stage_cost"] = stage.get("stage_cost", 0.0)
@@ -427,6 +428,7 @@ def build_model(inputs):
         "customer_advance": customer_advance,
         "billing": billing,
         "collections": collections,
+        "ar_balance": ar_balance,
 
         "cost": cost,
         "after_sales": after_sales,
@@ -449,6 +451,7 @@ def build_model(inputs):
         "project_cf": project_cf,
         "project_irr_annual": project_irr_annual,
         "equity_irr_annual": equity_irr_annual,
+        "equity_multiple": equity_multiple,
         "payback_month": payback_month,
         "peak_debt": peak_debt_actual,
         "peak_equity_at_risk": peak_equity_at_risk,
@@ -461,4 +464,5 @@ def build_model(inputs):
         "salvage_value_total": salvage_value_total,
         "total_interest": total_interest,
         "total_cit": total_cit,
+        "stage0_cost": stage0_cost,
     }
