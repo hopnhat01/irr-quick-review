@@ -1,8 +1,9 @@
+# engine.py
 import math
-import numpy_financial as npf
 
 
 EPS = 1e-9
+DAY_BASIS = 360.0
 
 
 def safe_irr(cashflows):
@@ -16,19 +17,68 @@ def safe_irr(cashflows):
     if not (has_positive and has_negative):
         return None
 
-    try:
-        irr = npf.irr(vals)
-        if irr is None or math.isnan(irr) or irr <= -1:
+    points = [(idx, val) for idx, val in enumerate(vals) if abs(val) > EPS]
+    if len(points) < 2:
+        return None
+
+    def npv(rate):
+        if rate <= -1:
             return None
-        return float(irr)
+        try:
+            log_base = math.log1p(rate)
+            total = 0.0
+            for t, cf in points:
+                total += cf * math.exp(-t * log_base)
+            return total
+        except Exception:
+            return None
+
+    try:
+        low = -0.999999
+        high = 0.10
+
+        npv_low = npv(low)
+        npv_high = npv(high)
+
+        if npv_low is None or npv_high is None:
+            return None
+
+        expand_steps = 0
+        while npv_low * npv_high > 0 and expand_steps < 50:
+            high = high * 2 + 0.10
+            npv_high = npv(high)
+            if npv_high is None:
+                return None
+            expand_steps += 1
+
+        if npv_low * npv_high > 0:
+            return None
+
+        for _ in range(200):
+            mid = (low + high) / 2.0
+            npv_mid = npv(mid)
+            if npv_mid is None:
+                return None
+
+            if abs(npv_mid) <= 1e-7:
+                return float(mid)
+
+            if npv_low * npv_mid <= 0:
+                high = mid
+                npv_high = npv_mid
+            else:
+                low = mid
+                npv_low = npv_mid
+
+        return float((low + high) / 2.0)
     except Exception:
         return None
 
 
-def annualize_monthly_irr(monthly_irr):
-    if monthly_irr is None:
+def annualize_daily_irr(daily_irr):
+    if daily_irr is None:
         return None
-    return ((1 + monthly_irr) ** 12 - 1) * 100
+    return ((1 + daily_irr) ** DAY_BASIS - 1) * 100
 
 
 def fisher_real_rate_pct(nominal_annual_pct, inflation_annual_pct):
@@ -133,9 +183,6 @@ def aggregate_decision(real_irr_status, npm_status, multiple_status):
 
 
 def build_model(inputs):
-    # =========================
-    # 1. INPUT
-    # =========================
     gross_deal_value = float(inputs["deal_value"])
     contract_discount_pct = float(inputs.get("contract_discount_pct", 0.0)) / 100.0
     cost_pct = float(inputs["cost_pct"]) / 100.0
@@ -147,65 +194,52 @@ def build_model(inputs):
     interest_rate_annual = float(inputs.get("interest_rate", 0.0)) / 100.0
     bank_rate_pct = float(inputs.get("bank_rate_pct", 0.0))
     inflation_rate_pct = float(inputs.get("inflation_rate_pct", 0.0))
-    principal_repayment_mode = str(inputs.get("principal_repayment_mode", "Trả đều theo tháng"))
+    principal_repayment_mode = str(inputs.get("principal_repayment_mode", "Trả đều theo ngày"))
     after_sales_pct = float(inputs.get("after_sales_pct", 0.0)) / 100.0
-    warranty_months = int(inputs.get("warranty_months", 0))
+    warranty_days = int(inputs.get("warranty_days", 0))
 
     raw_stages = inputs.get("stages", [])
     raw_debt_draw_schedule = inputs.get("debt_draw_schedule", [])
 
-    # =========================
-    # 2. VALIDATION
-    # =========================
     if gross_deal_value <= 0:
         raise ValueError("Giá trị hợp đồng phải lớn hơn 0.")
-
     if not (0 <= contract_discount_pct <= 1):
         raise ValueError("Chiết khấu hợp đồng phải nằm trong khoảng 0% đến 100%.")
-
     if not (0 <= cost_pct <= 1):
         raise ValueError("Tỷ lệ giá vốn phải nằm trong khoảng 0% đến 100%.")
-
     if not (0 <= salvage_pct <= 1):
         raise ValueError("Giá trị thu hồi cuối kỳ phải nằm trong khoảng 0% đến 100%.")
-
     if not (0 <= cit_rate <= 1):
         raise ValueError("Thuế CIT phải nằm trong khoảng 0% đến 100%.")
-
     if not (0 <= owner_advance_pct <= 1):
         raise ValueError("Tỷ lệ tạm ứng CĐT phải nằm trong khoảng 0% đến 100% giá trị hợp đồng sau chiết khấu.")
-
     if not (0 <= after_sales_pct <= 1):
         raise ValueError("Tỷ lệ bảo hành / bảo hiểm hậu mãi phải nằm trong khoảng 0% đến 100% giá trị hợp đồng.")
-
     if not (0 <= bank_rate_pct <= 100):
         raise ValueError("Lãi suất ngân hàng benchmark phải nằm trong khoảng 0% đến 100%.")
-
     if not (0 <= inflation_rate_pct <= 100):
         raise ValueError("Lạm phát phải nằm trong khoảng 0% đến 100%.")
-
-    if warranty_months < 0:
+    if avg_dso_days < 0:
+        raise ValueError("Số ngày công nợ trung bình không được âm.")
+    if warranty_days < 0:
         raise ValueError("Thời hạn bảo hành không được âm.")
 
     valid_principal_modes = {
-        "Trả đều theo tháng",
-        "Trả toàn bộ tại tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối",
+        "Trả đều theo ngày",
+        "Trả toàn bộ tại ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối",
     }
     if principal_repayment_mode not in valid_principal_modes:
         raise ValueError("Phương thức trả gốc vay không hợp lệ.")
 
-    # =========================
-    # 3. CHUẨN HÓA STAGES
-    # =========================
     stages = []
     for s in raw_stages:
-        duration_months = int(s["duration_months"])
+        duration_days = int(s["duration_days"])
         payment_pct = float(s["payment_pct"])
         cost_out_pct = float(s["cost_out_pct"])
         name = str(s.get("name", f"Giai đoạn {len(stages) + 1}")).strip() or f"Giai đoạn {len(stages) + 1}"
 
-        if duration_months <= 0:
-            raise ValueError(f"{name}: thời lượng giai đoạn phải lớn hơn 0.")
+        if duration_days <= 0:
+            raise ValueError(f"{name}: thời lượng giai đoạn phải lớn hơn 0 ngày.")
         if payment_pct <= 0:
             raise ValueError(f"{name}: tỷ lệ thanh toán phải lớn hơn 0.")
         if cost_out_pct <= 0:
@@ -215,7 +249,7 @@ def build_model(inputs):
             {
                 "stage_no": len(stages) + 1,
                 "name": name,
-                "duration_months": duration_months,
+                "duration_days": duration_days,
                 "payment_pct": payment_pct,
                 "cost_out_pct": cost_out_pct,
             }
@@ -223,21 +257,20 @@ def build_model(inputs):
 
     if not stages:
         raise ValueError("Phải có ít nhất 1 giai đoạn nghiệm thu.")
-
     if len(stages) > 5:
         raise ValueError("Tối đa 5 giai đoạn nghiệm thu.")
 
-    total_payment_pct = sum(s["payment_pct"] for s in stages)
-    if abs(total_payment_pct - 100.0) > 1e-6:
-        raise ValueError("Tổng tỷ lệ thanh toán các giai đoạn phải bằng đúng 100% giá trị hợp đồng.")
+    total_stage_payment_pct = sum(s["payment_pct"] for s in stages)
+    total_customer_payment_pct = owner_advance_pct * 100.0 + total_stage_payment_pct
+    if abs(total_customer_payment_pct - 100.0) > 1e-6:
+        raise ValueError(
+            "Tỷ lệ tạm ứng CĐT ban đầu + tổng tỷ lệ thanh toán các giai đoạn phải bằng đúng 100% giá trị hợp đồng sau chiết khấu."
+        )
 
     total_cost_out_pct = sum(s["cost_out_pct"] for s in stages)
     if abs(total_cost_out_pct - 100.0) > 1e-6:
         raise ValueError("Tổng tỷ lệ chi tiền đầu các giai đoạn phải bằng đúng 100% giá vốn.")
 
-    # =========================
-    # 4. THÔNG SỐ CƠ BẢN
-    # =========================
     contract_discount_amount = gross_deal_value * contract_discount_pct
     net_contract_value = gross_deal_value - contract_discount_amount
 
@@ -246,19 +279,15 @@ def build_model(inputs):
     owner_advance_amount = net_contract_value * owner_advance_pct
     after_sales_total = gross_deal_value * after_sales_pct
 
-    monthly_interest_rate = interest_rate_annual / 12.0
-    delay_month = math.ceil(avg_dso_days / 30.0)
+    daily_interest_rate = interest_rate_annual / DAY_BASIS
 
-    # =========================
-    # 5. TIMELINE THEO GIAI ĐOẠN
-    # =========================
     stage_plan = []
-    month_cursor = 1
+    day_cursor = 1
 
     for s in stages:
-        start_month = month_cursor
-        end_month = start_month + s["duration_months"] - 1
-        collection_month = end_month + delay_month
+        start_day = day_cursor
+        end_day = start_day + s["duration_days"] - 1
+        collection_day = end_day + avg_dso_days
 
         gross_contract_billing_value = gross_deal_value * (s["payment_pct"] / 100.0)
         stage_discount_amount = contract_discount_amount * (s["payment_pct"] / 100.0)
@@ -269,10 +298,10 @@ def build_model(inputs):
             {
                 "stage_no": s["stage_no"],
                 "name": s["name"],
-                "duration_months": s["duration_months"],
-                "start_month": start_month,
-                "end_month": end_month,
-                "collection_month": collection_month,
+                "duration_days": s["duration_days"],
+                "start_day": start_day,
+                "end_day": end_day,
+                "collection_day": collection_day,
                 "payment_pct": s["payment_pct"],
                 "cost_out_pct": s["cost_out_pct"],
                 "gross_contract_billing_value": gross_contract_billing_value,
@@ -286,20 +315,16 @@ def build_model(inputs):
                 "actual_equity_for_stage_cost": 0.0,
             }
         )
+        day_cursor = end_day + 1
 
-        month_cursor = end_month + 1
-
-    last_stage_end = stage_plan[-1]["end_month"]
-    last_collection_month = max(x["collection_month"] for x in stage_plan)
-    after_sales_start_month = last_stage_end + 1
-    after_sales_end_month = last_stage_end + max(warranty_months, 0)
-    horizon = max(last_collection_month, after_sales_end_month)
+    last_stage_end = stage_plan[-1]["end_day"]
+    last_collection_day = max(x["collection_day"] for x in stage_plan)
+    after_sales_start_day = last_stage_end + 1
+    after_sales_end_day = last_stage_end + max(warranty_days, 0)
+    horizon = max(last_collection_day, after_sales_end_day)
 
     timeline = list(range(horizon + 1))
 
-    # =========================
-    # 6. KHỞI TẠO CÁC MẢNG CỐ ĐỊNH
-    # =========================
     customer_advance = [0.0] * (horizon + 1)
     billing_gross = [0.0] * (horizon + 1)
     billing_discount = [0.0] * (horizon + 1)
@@ -311,50 +336,39 @@ def build_model(inputs):
     salvage = [0.0] * (horizon + 1)
     project_tax = [0.0] * (horizon + 1)
 
-    # Tạm ứng CĐT tại T0, tính trên giá trị hợp đồng sau chiết khấu
     customer_advance[0] = owner_advance_amount
 
-    # Billing / collection
-    remaining_advance_to_offset = owner_advance_amount
     for stage in stage_plan:
         gross_stage_billing = stage["gross_contract_billing_value"]
         stage_discount = stage["stage_discount_amount"]
         net_stage_billing = stage["net_stage_billing_value"]
 
-        billing_gross[stage["end_month"]] += gross_stage_billing
-        billing_discount[stage["end_month"]] += stage_discount
-        billing_net[stage["end_month"]] += net_stage_billing
+        billing_gross[stage["end_day"]] += gross_stage_billing
+        billing_discount[stage["end_day"]] += stage_discount
+        billing_net[stage["end_day"]] += net_stage_billing
 
-        offset_advance = min(net_stage_billing, remaining_advance_to_offset)
-        net_collection = net_stage_billing - offset_advance
-        remaining_advance_to_offset -= offset_advance
+        net_billing[stage["end_day"]] += net_stage_billing
+        collections[stage["collection_day"]] += net_stage_billing
 
-        net_billing[stage["end_month"]] += net_collection
-        collections[stage["collection_month"]] += net_collection
+        stage["advance_offset"] = 0.0
+        stage["net_collection_value"] = net_stage_billing
 
-        stage["advance_offset"] = offset_advance
-        stage["net_collection_value"] = net_collection
-
-    # Chi đầu giai đoạn
     for stage in stage_plan:
-        cost[stage["start_month"]] += stage["stage_cost"]
+        cost[stage["start_day"]] += stage["stage_cost"]
 
     allocated_cost = sum(cost)
     residual_cost = total_cost - allocated_cost
     if abs(residual_cost) > EPS:
-        cost[stage_plan[-1]["start_month"]] += residual_cost
+        cost[stage_plan[-1]["start_day"]] += residual_cost
         stage_plan[-1]["stage_cost"] += residual_cost
 
-    # Hậu mãi
-    if after_sales_total > 0 and warranty_months > 0:
-        monthly_after_sales = after_sales_total / warranty_months
-        for t in range(after_sales_start_month, after_sales_end_month + 1):
-            after_sales[t] += monthly_after_sales
+    if after_sales_total > 0 and warranty_days > 0:
+        daily_after_sales = after_sales_total / warranty_days
+        for t in range(after_sales_start_day, after_sales_end_day + 1):
+            after_sales[t] += daily_after_sales
 
-    # Thu hồi cuối kỳ
     salvage[horizon] += salvage_value_total
 
-    # Hạn mức vay theo giai đoạn
     debt_limit_amount_by_stage = {i: 0.0 for i in range(1, 6)}
     for item in raw_debt_draw_schedule:
         stage_no = int(item["stage_no"])
@@ -373,11 +387,8 @@ def build_model(inputs):
     if total_debt_limit_amount - total_cost > EPS:
         raise ValueError("Tổng hạn mức vay không được lớn hơn tổng giá vốn.")
 
-    stage_by_start_month = {stage["start_month"]: stage for stage in stage_plan}
+    stage_by_start_day = {stage["start_day"]: stage for stage in stage_plan}
 
-    # =========================
-    # 7. HÀM MÔ PHỎNG WATERFALL
-    # =========================
     def run_waterfall(total_tax_at_horizon):
         debt_draw_local = [0.0] * (horizon + 1)
         interest_local = [0.0] * (horizon + 1)
@@ -402,34 +413,34 @@ def build_model(inputs):
         debt_balance = 0.0
         peak_debt_local = 0.0
 
-        def calc_principal_due(month_idx, current_debt_balance):
+        def calc_principal_due(day_idx, current_debt_balance):
             if current_debt_balance <= EPS:
                 return 0.0
 
-            if principal_repayment_mode == "Trả đều theo tháng":
-                if 1 <= month_idx <= last_collection_month:
-                    remaining_periods = last_collection_month - month_idx + 1
-                    if remaining_periods > 0:
-                        return current_debt_balance / remaining_periods
+            if principal_repayment_mode == "Trả đều theo ngày":
+                if 1 <= day_idx <= last_collection_day:
+                    remaining_days = last_collection_day - day_idx + 1
+                    if remaining_days > 0:
+                        return current_debt_balance / remaining_days
                 return 0.0
 
-            if principal_repayment_mode == "Trả toàn bộ tại tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối":
-                if month_idx == last_collection_month:
+            if principal_repayment_mode == "Trả toàn bộ tại ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối":
+                if day_idx == last_collection_day:
                     return current_debt_balance
                 return 0.0
 
             return 0.0
 
-        def simulate_forward_no_distribution(start_month, starting_cash, starting_debt):
+        def simulate_forward_no_distribution(start_day, starting_cash, starting_debt):
             sim_cash = float(starting_cash)
             sim_debt = float(starting_debt)
             future_equity_needed = 0.0
 
-            for tt in range(start_month, horizon + 1):
+            for tt in range(start_day, horizon + 1):
                 sim_cash += customer_advance[tt] + collections[tt] + salvage[tt]
 
-                if tt in stage_by_start_month:
-                    sim_stage = stage_by_start_month[tt]
+                if tt in stage_by_start_day:
+                    sim_stage = stage_by_start_day[tt]
                     sim_stage_cost = sim_stage["stage_cost"]
 
                     sim_cash_used = min(sim_cash, sim_stage_cost)
@@ -444,9 +455,8 @@ def build_model(inputs):
 
                     if sim_remaining_stage_cost > EPS:
                         future_equity_needed += sim_remaining_stage_cost
-                        sim_remaining_stage_cost = 0.0
 
-                sim_interest_due = sim_debt * monthly_interest_rate if sim_debt > EPS else 0.0
+                sim_interest_due = sim_debt * daily_interest_rate if sim_debt > EPS else 0.0
                 sim_principal_due = calc_principal_due(tt, sim_debt)
                 sim_other_outflows = after_sales[tt] + sim_interest_due + tax_local[tt] + sim_principal_due
 
@@ -464,22 +474,21 @@ def build_model(inputs):
 
             if sim_debt > EPS:
                 future_equity_needed += sim_debt
-                sim_debt = 0.0
 
             return future_equity_needed
 
         reserve_cache = {}
 
-        def required_cash_reserve_from_next_month(next_month, current_debt_balance):
-            if next_month > horizon:
+        def required_cash_reserve_from_next_day(next_day, current_debt_balance):
+            if next_day > horizon:
                 return 0.0
 
-            cache_key = (next_month, round(current_debt_balance, 8))
+            cache_key = (next_day, round(current_debt_balance, 8))
             if cache_key in reserve_cache:
                 return reserve_cache[cache_key]
 
             equity_need_at_zero_cash = simulate_forward_no_distribution(
-                start_month=next_month,
+                start_day=next_day,
                 starting_cash=0.0,
                 starting_debt=current_debt_balance,
             )
@@ -494,7 +503,7 @@ def build_model(inputs):
             for _ in range(60):
                 mid = (lo + hi) / 2.0
                 future_equity_needed = simulate_forward_no_distribution(
-                    start_month=next_month,
+                    start_day=next_day,
                     starting_cash=mid,
                     starting_debt=current_debt_balance,
                 )
@@ -506,16 +515,18 @@ def build_model(inputs):
             reserve_cache[cache_key] = hi
             return hi
 
+        distribution_days = set([0, horizon])
+        distribution_days.update(t for t, x in enumerate(collections) if abs(x) > EPS)
+        distribution_days.update(t for t, x in enumerate(customer_advance) if abs(x) > EPS)
+        distribution_days.update(t for t, x in enumerate(salvage) if abs(x) > EPS)
+
         for t in timeline:
             opening_cash_local[t] = cash_balance
 
-            # 1) Tiền vào đầu tháng
             cash_balance += customer_advance[t] + collections[t] + salvage[t]
 
-            # 2) Nếu đầu giai đoạn -> chi tiền đầu giai đoạn theo thứ tự:
-            # tiền sẵn có/CĐT -> vay của giai đoạn đó -> VCSH
-            if t in stage_by_start_month:
-                stage = stage_by_start_month[t]
+            if t in stage_by_start_day:
+                stage = stage_by_start_day[t]
                 stage_no = stage["stage_no"]
                 stage_cost = stage["stage_cost"]
 
@@ -534,7 +545,6 @@ def build_model(inputs):
                 if remaining_stage_cost > EPS:
                     equity_used_for_stage = remaining_stage_cost
                     equity_in_local[t] += equity_used_for_stage
-                    remaining_stage_cost = 0.0
 
                 stage_cash_used_map[stage_no] = cash_used
                 stage_debt_used_map[stage_no] = debt_used
@@ -542,14 +552,11 @@ def build_model(inputs):
 
             peak_debt_local = max(peak_debt_local, debt_balance)
 
-            # 3) Lãi tháng tính trên dư nợ sau draw đầu tháng
-            interest_due = debt_balance * monthly_interest_rate if debt_balance > EPS else 0.0
+            interest_due = debt_balance * daily_interest_rate if debt_balance > EPS else 0.0
             interest_local[t] = interest_due
 
-            # 4) Trả gốc theo mode
             principal_due = calc_principal_due(t, debt_balance)
 
-            # 5) Các chi phí khác trong tháng
             other_outflows = after_sales[t] + interest_due + tax_local[t] + principal_due
 
             if cash_balance >= other_outflows:
@@ -570,11 +577,9 @@ def build_model(inputs):
                 principal_local[t] += debt_balance
                 debt_balance = 0.0
 
-            # 6) Phân phối tiền dư về VCSH:
-            # giữ lại đúng reserve tối thiểu, chỉ trả phần vượt reserve
-            if t < horizon and cash_balance > EPS:
-                reserve_needed = required_cash_reserve_from_next_month(
-                    next_month=t + 1,
+            if t in distribution_days and t < horizon and cash_balance > EPS:
+                reserve_needed = required_cash_reserve_from_next_day(
+                    next_day=t + 1,
                     current_debt_balance=debt_balance,
                 )
             else:
@@ -612,13 +617,9 @@ def build_model(inputs):
             "excess_cash_distributed": excess_cash_distributed_local,
         }
 
-    # Pass 1: chưa tính tax để lấy tổng lãi vay
     pass1 = run_waterfall(total_tax_at_horizon=0.0)
     total_interest_pass1 = pass1["total_interest"]
 
-    # =========================
-    # 8. THUẾ
-    # =========================
     pre_tax_profit_equity = net_contract_value + salvage_value_total - total_cost - after_sales_total - total_interest_pass1
     total_cit = max(0.0, pre_tax_profit_equity) * cit_rate
 
@@ -626,7 +627,6 @@ def build_model(inputs):
     project_tax_total = max(0.0, pre_tax_profit_project) * cit_rate
     project_tax[horizon] = project_tax_total
 
-    # Pass 2: có tax thật
     pass2 = run_waterfall(total_tax_at_horizon=total_cit)
 
     debt_draw = pass2["debt_draw"]
@@ -643,7 +643,6 @@ def build_model(inputs):
     reserve_required = pass2["reserve_required"]
     excess_cash_distributed = pass2["excess_cash_distributed"]
 
-    # Gắn thông tin dùng vốn thực tế vào stage_plan
     for stage in stage_plan:
         stage_no = stage["stage_no"]
         stage["customer_cash_used_for_stage_cost"] = pass2["stage_cash_used_map"][stage_no]
@@ -652,9 +651,6 @@ def build_model(inputs):
 
     total_actual_debt_draw = sum(debt_draw)
 
-    # =========================
-    # 9. AR, PROJECT CF, EQUITY CF
-    # =========================
     ar_balance = [0.0] * (horizon + 1)
     project_cf = [0.0] * (horizon + 1)
     equity_cf = [0.0] * (horizon + 1)
@@ -675,14 +671,11 @@ def build_model(inputs):
 
         equity_cf[t] = -equity_in[t] + equity_out[t]
 
-    # =========================
-    # 10. CHỈ SỐ
-    # =========================
-    project_irr_month = safe_irr(project_cf)
-    equity_irr_month = safe_irr(equity_cf)
+    project_irr_day = safe_irr(project_cf)
+    equity_irr_day = safe_irr(equity_cf)
 
-    project_irr_annual = annualize_monthly_irr(project_irr_month)
-    equity_irr_annual = annualize_monthly_irr(equity_irr_month)
+    project_irr_annual = annualize_daily_irr(project_irr_day)
+    equity_irr_annual = annualize_daily_irr(equity_irr_day)
 
     project_real_irr_annual = fisher_real_rate_pct(project_irr_annual, inflation_rate_pct)
     equity_real_irr_annual = fisher_real_rate_pct(equity_irr_annual, inflation_rate_pct)
@@ -699,7 +692,7 @@ def build_model(inputs):
 
     running_equity_at_risk = 0.0
     peak_equity_at_risk = 0.0
-    payback_month = None
+    payback_day = None
     has_called_equity = False
 
     for t in timeline:
@@ -709,16 +702,16 @@ def build_model(inputs):
         running_equity_at_risk += equity_in[t] - equity_out[t]
         peak_equity_at_risk = max(peak_equity_at_risk, running_equity_at_risk)
 
-        if has_called_equity and running_equity_at_risk <= EPS and payback_month is None:
-            payback_month = t
+        if has_called_equity and running_equity_at_risk <= EPS and payback_day is None:
+            payback_day = t
 
     if total_equity_in <= EPS:
-        payback_month = 0
-        payback_message = "Mô hình không cần bơm vốn chủ, nên thời gian hoàn vốn được xem là 0 tháng."
-    elif payback_month is None:
+        payback_day = 0
+        payback_message = "Mô hình không cần bơm vốn chủ, nên thời gian hoàn vốn được xem là 0 ngày."
+    elif payback_day is None:
         payback_message = "Chưa hoàn vốn trong toàn bộ timeline của mô hình."
     else:
-        payback_message = f"Hoàn vốn sau {payback_month} tháng."
+        payback_message = f"Hoàn vốn sau {payback_day} ngày."
 
     equity_multiple = None
     if total_equity_in > EPS:
@@ -739,7 +732,6 @@ def build_model(inputs):
     moic_status, moic_explanation = classify_multiple(moic, "MOIC")
     equity_multiple_status, equity_multiple_explanation = classify_multiple(equity_multiple, "Equity Multiple")
 
-    # Chỉ dùng một trục "multiple" trong quyết định để tránh double count vì MOIC = Equity Multiple trong mô hình hiện tại
     decision = aggregate_decision(real_irr_status, net_profit_margin_status, moic_status)
 
     decision_basis = (
@@ -774,15 +766,13 @@ def build_model(inputs):
         "phần thiếu mới rút vay của đúng giai đoạn đó, phần thiếu còn lại mới dùng VCSH."
     )
 
-    if principal_repayment_mode == "Trả đều theo tháng":
+    if principal_repayment_mode == "Trả đều theo ngày":
         principal_repayment_basis = (
-            "Trả gốc vay theo phương thức trả đều theo tháng. "
-            "Mỗi tháng, số gốc phải trả được phân bổ đều trên số kỳ còn lại đến tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối."
+            "Trả gốc vay theo phương thức trả đều theo ngày. "
+            "Mỗi ngày, số gốc phải trả được phân bổ đều trên số ngày còn lại đến ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối."
         )
     else:
-        principal_repayment_basis = (
-            "Trả toàn bộ gốc vay tại tháng thu tiền cuối cùng của giai đoạn nghiệm thu cuối."
-        )
+        principal_repayment_basis = "Trả toàn bộ gốc vay tại ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối."
 
     evaluation_table = [
         {
@@ -805,7 +795,6 @@ def build_model(inputs):
     return {
         "timeline": timeline,
         "stage_plan": stage_plan,
-
         "customer_advance": customer_advance,
         "billing_gross": billing_gross,
         "billing_discount": billing_discount,
@@ -813,7 +802,6 @@ def build_model(inputs):
         "net_billing": net_billing,
         "collections": collections,
         "ar_balance": ar_balance,
-
         "cost": cost,
         "after_sales": after_sales,
         "interest": interest,
@@ -821,21 +809,16 @@ def build_model(inputs):
         "tax": tax,
         "project_tax": project_tax,
         "salvage": salvage,
-
         "debt_draw": debt_draw,
         "debt_balance": debt_balance_series,
-
         "equity_in": equity_in,
         "equity_out": equity_out,
         "equity_cf": equity_cf,
         "cum_equity_cf": cum_equity_cf,
-
         "opening_cash": opening_cash,
         "closing_cash": closing_cash,
-
         "reserve_required": reserve_required,
         "excess_cash_distributed": excess_cash_distributed,
-
         "project_cf": project_cf,
         "project_irr_annual": project_irr_annual,
         "equity_irr_annual": equity_irr_annual,
@@ -843,14 +826,12 @@ def build_model(inputs):
         "equity_real_irr_annual": equity_real_irr_annual,
         "bank_real_rate_annual": bank_real_rate_annual,
         "real_irr_spread_vs_bank": real_irr_spread_vs_bank,
-
         "equity_multiple": equity_multiple,
         "moic": moic,
         "net_profit": net_profit,
         "net_profit_margin": net_profit_margin,
-        "payback_month": payback_month,
+        "payback_day": payback_day,
         "payback_message": payback_message,
-
         "peak_debt": peak_debt,
         "peak_equity_at_risk": peak_equity_at_risk,
         "decision": decision,
@@ -860,7 +841,6 @@ def build_model(inputs):
         "multiple_basis": multiple_basis,
         "source_of_funds_basis": source_of_funds_basis,
         "principal_repayment_basis": principal_repayment_basis,
-
         "real_irr_status": real_irr_status,
         "net_profit_margin_status": net_profit_margin_status,
         "moic_status": moic_status,
@@ -870,7 +850,6 @@ def build_model(inputs):
         "moic_explanation": moic_explanation,
         "equity_multiple_explanation": equity_multiple_explanation,
         "evaluation_table": evaluation_table,
-
         "gross_deal_value": gross_deal_value,
         "contract_discount_pct": contract_discount_pct * 100.0,
         "contract_discount_amount": contract_discount_amount,
@@ -888,7 +867,7 @@ def build_model(inputs):
         "total_debt_limit_amount": total_debt_limit_amount,
         "total_actual_debt_draw": total_actual_debt_draw,
         "principal_repayment_mode": principal_repayment_mode,
-        "last_collection_month": last_collection_month,
+        "last_collection_day": last_collection_day,
         "bank_rate_pct": bank_rate_pct,
         "inflation_rate_pct": inflation_rate_pct,
     }
