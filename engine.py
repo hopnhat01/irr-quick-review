@@ -5,6 +5,13 @@ EPS = 1e-9
 DAY_BASIS = 360.0
 
 
+def sign_change_count(cashflows):
+    vals = [float(x) for x in cashflows if abs(float(x)) > EPS]
+    if len(vals) < 2:
+        return 0
+    return sum((a > 0) != (b > 0) for a, b in zip(vals, vals[1:]))
+
+
 def safe_irr(cashflows):
     if not cashflows or len(cashflows) < 2:
         return None
@@ -14,6 +21,10 @@ def safe_irr(cashflows):
     has_negative = any(v < 0 for v in vals)
 
     if not (has_positive and has_negative):
+        return None
+
+    # IRR cổ điển không đáng tin khi dòng tiền đổi dấu nhiều lần
+    if sign_change_count(vals) > 1:
         return None
 
     points = [(idx, val) for idx, val in enumerate(vals) if abs(val) > EPS]
@@ -318,10 +329,15 @@ def build_model(inputs):
 
     last_stage_end = stage_plan[-1]["end_day"]
     last_collection_day = max(x["collection_day"] for x in stage_plan)
-    after_sales_start_day = last_stage_end + 1
-    after_sales_end_day = last_stage_end + max(warranty_days, 0)
-    horizon = max(last_collection_day, after_sales_end_day)
 
+    if after_sales_total > 0 and warranty_days > 0:
+        after_sales_start_day = last_stage_end + 1
+        after_sales_end_day = last_stage_end + warranty_days
+    else:
+        after_sales_start_day = last_stage_end
+        after_sales_end_day = last_stage_end
+
+    horizon = max(last_collection_day, after_sales_end_day)
     timeline = list(range(horizon + 1))
 
     customer_advance = [0.0] * (horizon + 1)
@@ -361,24 +377,27 @@ def build_model(inputs):
         cost[stage_plan[-1]["start_day"]] += residual_cost
         stage_plan[-1]["stage_cost"] += residual_cost
 
-    if after_sales_total > 0 and warranty_days > 0:
-        daily_after_sales = after_sales_total / warranty_days
-        for t in range(after_sales_start_day, after_sales_end_day + 1):
-            after_sales[t] += daily_after_sales
+    # FIX: không làm mất after-sales khi warranty_days = 0
+    if after_sales_total > 0:
+        if warranty_days > 0:
+            daily_after_sales = after_sales_total / warranty_days
+            for t in range(after_sales_start_day, after_sales_end_day + 1):
+                after_sales[t] += daily_after_sales
+        else:
+            after_sales[last_stage_end] += after_sales_total
 
     salvage[horizon] += salvage_value_total
 
-    debt_limit_amount_by_stage = {i: 0.0 for i in range(1, 6)}
+    # FIX: hỗ trợ đúng số stage thực tế, không khóa cứng stage 1..4
+    debt_limit_amount_by_stage = {i: 0.0 for i in range(1, len(stage_plan) + 1)}
     for item in raw_debt_draw_schedule:
         stage_no = int(item["stage_no"])
         draw_pct_cost = float(item["draw_pct_cost"])
 
         if draw_pct_cost < 0:
             raise ValueError(f"Hạn mức vay giai đoạn {stage_no} không được âm.")
-        if stage_no < 1 or stage_no > 4:
-            raise ValueError("Hạn mức vay chỉ được phép từ giai đoạn 1 đến giai đoạn 4.")
-        if stage_no > len(stage_plan):
-            continue
+        if stage_no < 1 or stage_no > len(stage_plan):
+            raise ValueError("Hạn mức vay chỉ được phép trong các giai đoạn đã khai báo.")
 
         debt_limit_amount_by_stage[stage_no] += total_cost * (draw_pct_cost / 100.0)
 
@@ -521,6 +540,7 @@ def build_model(inputs):
 
         for t in timeline:
             opening_cash_local[t] = cash_balance
+            debt_balance_before_today = debt_balance
 
             cash_balance += customer_advance[t] + collections[t] + salvage[t]
 
@@ -551,7 +571,8 @@ def build_model(inputs):
 
             peak_debt_local = max(peak_debt_local, debt_balance)
 
-            interest_due = debt_balance * daily_interest_rate if debt_balance > EPS else 0.0
+            # FIX: tính lãi trên dư nợ đầu ngày, tránh tính lãi ngay trong ngày vừa draw
+            interest_due = debt_balance_before_today * daily_interest_rate if debt_balance_before_today > EPS else 0.0
             interest_local[t] = interest_due
 
             principal_due = calc_principal_due(t, debt_balance)
@@ -670,8 +691,23 @@ def build_model(inputs):
 
         equity_cf[t] = -equity_in[t] + equity_out[t]
 
+    project_cf_sign_changes = sign_change_count(project_cf)
+    equity_cf_sign_changes = sign_change_count(equity_cf)
+
     project_irr_day = safe_irr(project_cf)
     equity_irr_day = safe_irr(equity_cf)
+
+    project_irr_warning = None
+    equity_irr_warning = None
+
+    if project_cf_sign_changes > 1:
+        project_irr_warning = (
+            f"Project cash flow đổi dấu {project_cf_sign_changes} lần; IRR cổ điển có thể có nhiều nghiệm hoặc không còn ý nghĩa."
+        )
+    if equity_cf_sign_changes > 1:
+        equity_irr_warning = (
+            f"Equity cash flow đổi dấu {equity_cf_sign_changes} lần; IRR cổ điển có thể có nhiều nghiệm hoặc không còn ý nghĩa."
+        )
 
     project_irr_annual = annualize_daily_irr(project_irr_day)
     equity_irr_annual = annualize_daily_irr(equity_irr_day)
@@ -719,9 +755,12 @@ def build_model(inputs):
     moic = equity_multiple
 
     net_profit = net_contract_value + salvage_value_total - total_cost - after_sales_total - total_interest - total_cit
+
+    # FIX: NPM không nên cộng salvage vào tử số nếu mẫu là doanh thu hợp đồng sau chiết khấu
+    net_profit_for_margin = net_contract_value - total_cost - after_sales_total - total_interest - total_cit
     net_profit_margin = None
     if net_contract_value > EPS:
-        net_profit_margin = (net_profit / net_contract_value) * 100.0
+        net_profit_margin = (net_profit_for_margin / net_contract_value) * 100.0
 
     real_irr_status, real_irr_spread_vs_bank, real_irr_explanation = classify_real_irr_vs_bank(
         equity_real_irr_annual,
@@ -750,8 +789,8 @@ def build_model(inputs):
     )
 
     net_profit_margin_basis = (
-        "Net Profit Margin = Lợi nhuận ròng / Giá trị hợp đồng sau chiết khấu. "
-        "Chỉ số này cho biết mỗi 100 đồng doanh thu thực nhận còn lại bao nhiêu đồng lợi nhuận ròng sau chi phí, lãi vay và thuế."
+        "Net Profit Margin = Lợi nhuận ròng từ hoạt động hợp đồng / Giá trị hợp đồng sau chiết khấu. "
+        "Trong mô hình này, khi tính margin đã loại phần salvage khỏi tử số để tránh làm đẹp giả biên lợi nhuận ròng của hoạt động chính."
     )
 
     multiple_basis = (
@@ -819,6 +858,10 @@ def build_model(inputs):
         "reserve_required": reserve_required,
         "excess_cash_distributed": excess_cash_distributed,
         "project_cf": project_cf,
+        "project_cf_sign_changes": project_cf_sign_changes,
+        "equity_cf_sign_changes": equity_cf_sign_changes,
+        "project_irr_warning": project_irr_warning,
+        "equity_irr_warning": equity_irr_warning,
         "project_irr_annual": project_irr_annual,
         "equity_irr_annual": equity_irr_annual,
         "project_real_irr_annual": project_real_irr_annual,
@@ -828,6 +871,7 @@ def build_model(inputs):
         "equity_multiple": equity_multiple,
         "moic": moic,
         "net_profit": net_profit,
+        "net_profit_for_margin": net_profit_for_margin,
         "net_profit_margin": net_profit_margin,
         "payback_day": payback_day,
         "payback_message": payback_message,
