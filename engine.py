@@ -23,10 +23,6 @@ def safe_irr(cashflows):
     if not (has_positive and has_negative):
         return None
 
-    # IRR cổ điển không đáng tin khi dòng tiền đổi dấu nhiều lần
-    if sign_change_count(vals) > 1:
-        return None
-
     points = [(idx, val) for idx, val in enumerate(vals) if abs(val) > EPS]
     if len(points) < 2:
         return None
@@ -44,27 +40,77 @@ def safe_irr(cashflows):
             return None
 
     try:
-        low = -0.999999
-        high = 0.10
+        candidate_rates = [
+            -0.9999,
+            -0.99,
+            -0.95,
+            -0.90,
+            -0.75,
+            -0.50,
+            -0.25,
+            -0.10,
+            0.0,
+            0.05,
+            0.10,
+            0.20,
+            0.50,
+            1.0,
+            2.0,
+            5.0,
+            10.0,
+            20.0,
+            50.0,
+            100.0,
+        ]
 
-        npv_low = npv(low)
-        npv_high = npv(high)
+        npv_values = []
+        for r in candidate_rates:
+            v = npv(r)
+            npv_values.append((r, v))
 
-        if npv_low is None or npv_high is None:
-            return None
+        bracket = None
+        for i in range(len(npv_values) - 1):
+            r1, v1 = npv_values[i]
+            r2, v2 = npv_values[i + 1]
 
-        expand_steps = 0
-        while npv_low * npv_high > 0 and expand_steps < 50:
-            high = high * 2 + 0.10
+            if v1 is None or v2 is None:
+                continue
+
+            if abs(v1) <= 1e-7:
+                return float(r1)
+            if abs(v2) <= 1e-7:
+                return float(r2)
+
+            if v1 * v2 < 0:
+                bracket = (r1, r2, v1, v2)
+                break
+
+        if bracket is None:
+            low = -0.999999
+            high = 0.10
+
+            npv_low = npv(low)
             npv_high = npv(high)
-            if npv_high is None:
+
+            if npv_low is None or npv_high is None:
                 return None
-            expand_steps += 1
 
-        if npv_low * npv_high > 0:
-            return None
+            expand_steps = 0
+            while npv_low * npv_high > 0 and expand_steps < 80:
+                high = high * 2 + 0.10
+                npv_high = npv(high)
+                if npv_high is None:
+                    return None
+                expand_steps += 1
 
-        for _ in range(200):
+            if npv_low * npv_high > 0:
+                return None
+
+            bracket = (low, high, npv_low, npv_high)
+
+        low, high, npv_low, npv_high = bracket
+
+        for _ in range(300):
             mid = (low + high) / 2.0
             npv_mid = npv(mid)
             if npv_mid is None:
@@ -307,7 +353,7 @@ def build_model(inputs):
         stage_plan.append(
             {
                 "stage_no": s["stage_no"],
-                "name": s["name"],
+                "name": name if False else s["name"],
                 "duration_days": s["duration_days"],
                 "start_day": start_day,
                 "end_day": end_day,
@@ -338,6 +384,7 @@ def build_model(inputs):
         after_sales_end_day = last_stage_end
 
     horizon = max(last_collection_day, after_sales_end_day)
+
     timeline = list(range(horizon + 1))
 
     customer_advance = [0.0] * (horizon + 1)
@@ -377,7 +424,6 @@ def build_model(inputs):
         cost[stage_plan[-1]["start_day"]] += residual_cost
         stage_plan[-1]["stage_cost"] += residual_cost
 
-    # FIX: không làm mất after-sales khi warranty_days = 0
     if after_sales_total > 0:
         if warranty_days > 0:
             daily_after_sales = after_sales_total / warranty_days
@@ -388,7 +434,6 @@ def build_model(inputs):
 
     salvage[horizon] += salvage_value_total
 
-    # FIX: hỗ trợ đúng số stage thực tế, không khóa cứng stage 1..4
     debt_limit_amount_by_stage = {i: 0.0 for i in range(1, len(stage_plan) + 1)}
     for item in raw_debt_draw_schedule:
         stage_no = int(item["stage_no"])
@@ -571,7 +616,6 @@ def build_model(inputs):
 
             peak_debt_local = max(peak_debt_local, debt_balance)
 
-            # FIX: tính lãi trên dư nợ đầu ngày, tránh tính lãi ngay trong ngày vừa draw
             interest_due = debt_balance_before_today * daily_interest_rate if debt_balance_before_today > EPS else 0.0
             interest_local[t] = interest_due
 
@@ -702,11 +746,14 @@ def build_model(inputs):
 
     if project_cf_sign_changes > 1:
         project_irr_warning = (
-            f"Project cash flow đổi dấu {project_cf_sign_changes} lần; IRR cổ điển có thể có nhiều nghiệm hoặc không còn ý nghĩa."
+            f"Project cash flow đổi dấu {project_cf_sign_changes} lần; "
+            "IRR vẫn được tính theo nghiệm tìm thấy trong khoảng dò, nhưng có thể không duy nhất."
         )
+
     if equity_cf_sign_changes > 1:
         equity_irr_warning = (
-            f"Equity cash flow đổi dấu {equity_cf_sign_changes} lần; IRR cổ điển có thể có nhiều nghiệm hoặc không còn ý nghĩa."
+            f"Equity cash flow đổi dấu {equity_cf_sign_changes} lần; "
+            "IRR vẫn được tính theo nghiệm tìm thấy trong khoảng dò, nhưng có thể không duy nhất."
         )
 
     project_irr_annual = annualize_daily_irr(project_irr_day)
@@ -756,7 +803,6 @@ def build_model(inputs):
 
     net_profit = net_contract_value + salvage_value_total - total_cost - after_sales_total - total_interest - total_cit
 
-    # FIX: NPM không nên cộng salvage vào tử số nếu mẫu là doanh thu hợp đồng sau chiết khấu
     net_profit_for_margin = net_contract_value - total_cost - after_sales_total - total_interest - total_cit
     net_profit_margin = None
     if net_contract_value > EPS:
