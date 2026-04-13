@@ -1,4 +1,3 @@
-# engine.py
 import math
 
 
