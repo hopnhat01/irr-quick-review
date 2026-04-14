@@ -1,3 +1,4 @@
+# engine.py
 import math
 
 EPS = 1e-9
@@ -6,140 +7,45 @@ DAYS_PER_MONTH = 30.0
 MONTHS_PER_YEAR = 12.0
 
 
-def sign_change_count(cashflows):
-    vals = [float(x) for x in cashflows if abs(float(x)) > EPS]
-    if len(vals) < 2:
-        return 0
-    return sum((a > 0) != (b > 0) for a, b in zip(vals, vals[1:]))
-
-
-def safe_irr(cashflows, times=None):
-    if not cashflows or len(cashflows) < 2:
-        return None
-
+def normalize_cashflows(cashflows, rel_tol=1e-12, abs_tol=1e-9):
     vals = [float(x) for x in cashflows]
-    has_positive = any(v > 0 for v in vals)
-    has_negative = any(v < 0 for v in vals)
-    if not (has_positive and has_negative):
+    scale = max([abs(v) for v in vals] + [1.0])
+    tol = max(abs_tol, scale * rel_tol)
+    normalized = [0.0 if abs(v) <= tol else v for v in vals]
+    return normalized, tol
+
+
+def sign_change_count_clean(cashflows):
+    vals, _ = normalize_cashflows(cashflows)
+    nz = [v for v in vals if v != 0.0]
+    if len(nz) < 2:
+        return 0
+    return sum((a > 0) != (b > 0) for a, b in zip(nz, nz[1:]))
+
+
+def month_end_day(day_idx):
+    if day_idx <= 0:
+        return 0
+    return int(math.ceil(day_idx / DAYS_PER_MONTH) * DAYS_PER_MONTH)
+
+
+def monthly_rate_from_annual_pct(annual_pct):
+    annual = float(annual_pct) / 100.0
+    if annual <= -1:
         return None
+    return (1.0 + annual) ** (1.0 / MONTHS_PER_YEAR) - 1.0
 
-    if times is None:
-        time_points = [float(i) for i in range(len(vals))]
-    else:
-        if len(times) != len(vals):
-            raise ValueError("times phải có cùng số phần tử với cashflows.")
-        time_points = [float(t) for t in times]
 
-    points = [(t, cf) for t, cf in zip(time_points, vals) if abs(cf) > EPS]
-    if len(points) < 2:
+def annualize_monthly_rate(monthly_rate):
+    if monthly_rate is None:
         return None
-
-    def npv(rate):
-        if rate <= -1:
-            return None
-        try:
-            log_base = math.log1p(rate)
-            total = 0.0
-            for t, cf in points:
-                total += cf * math.exp(-t * log_base)
-            return total
-        except Exception:
-            return None
-
-    try:
-        candidate_rates = [
-            -0.9999,
-            -0.99,
-            -0.95,
-            -0.90,
-            -0.75,
-            -0.50,
-            -0.25,
-            -0.10,
-            0.0,
-            0.02,
-            0.05,
-            0.10,
-            0.20,
-            0.50,
-            1.0,
-            2.0,
-            5.0,
-            10.0,
-            20.0,
-            50.0,
-            100.0,
-        ]
-
-        npv_values = []
-        for r in candidate_rates:
-            npv_values.append((r, npv(r)))
-
-        bracket = None
-        for i in range(len(npv_values) - 1):
-            r1, v1 = npv_values[i]
-            r2, v2 = npv_values[i + 1]
-
-            if v1 is None or v2 is None:
-                continue
-
-            if abs(v1) <= 1e-7:
-                return float(r1)
-            if abs(v2) <= 1e-7:
-                return float(r2)
-
-            if v1 * v2 < 0:
-                bracket = (r1, r2, v1, v2)
-                break
-
-        if bracket is None:
-            low = -0.999999
-            high = 0.10
-
-            npv_low = npv(low)
-            npv_high = npv(high)
-            if npv_low is None or npv_high is None:
-                return None
-
-            expand_steps = 0
-            while npv_low * npv_high > 0 and expand_steps < 80:
-                high = high * 2 + 0.10
-                npv_high = npv(high)
-                if npv_high is None:
-                    return None
-                expand_steps += 1
-
-            if npv_low * npv_high > 0:
-                return None
-
-            bracket = (low, high, npv_low, npv_high)
-
-        low, high, npv_low, _ = bracket
-
-        for _ in range(300):
-            mid = (low + high) / 2.0
-            npv_mid = npv(mid)
-            if npv_mid is None:
-                return None
-
-            if abs(npv_mid) <= 1e-7:
-                return float(mid)
-
-            if npv_low * npv_mid <= 0:
-                high = mid
-            else:
-                low = mid
-                npv_low = npv_mid
-
-        return float((low + high) / 2.0)
-    except Exception:
+    if monthly_rate <= -1:
         return None
+    return ((1.0 + monthly_rate) ** MONTHS_PER_YEAR - 1.0) * 100.0
 
 
 def annualize_monthly_irr(monthly_irr):
-    if monthly_irr is None:
-        return None
-    return ((1 + monthly_irr) ** MONTHS_PER_YEAR - 1) * 100
+    return annualize_monthly_rate(monthly_irr)
 
 
 def fisher_real_rate_pct(nominal_annual_pct, inflation_annual_pct):
@@ -149,40 +55,287 @@ def fisher_real_rate_pct(nominal_annual_pct, inflation_annual_pct):
     nominal = nominal_annual_pct / 100.0
     inflation = inflation_annual_pct / 100.0
 
-    if (1 + inflation) <= EPS:
+    if (1.0 + inflation) <= EPS:
         return None
 
-    return (((1 + nominal) / (1 + inflation)) - 1) * 100
+    return (((1.0 + nominal) / (1.0 + inflation)) - 1.0) * 100.0
 
 
-def classify_real_irr_vs_bank(real_irr_pct, bank_real_rate_pct):
-    if real_irr_pct is None or bank_real_rate_pct is None:
+def npv_from_points(rate, points):
+    if rate <= -1:
+        return None
+    try:
+        log_base = math.log1p(rate)
+        return sum(cf * math.exp(-t * log_base) for t, cf in points)
+    except Exception:
+        return None
+
+
+def build_rate_grid():
+    grid = [
+        -0.9999, -0.99, -0.95, -0.90, -0.80, -0.70, -0.60, -0.50,
+        -0.40, -0.30, -0.20, -0.10, -0.05, -0.02, 0.0,
+    ]
+    grid += [i / 100.0 for i in range(1, 101)]
+    x = 1.0
+    for _ in range(40):
+        x = x * 1.25 + 0.01
+        grid.append(x)
+    return sorted(set(grid))
+
+
+def bisect_root(points, low, high, tol=1e-8, max_iter=300):
+    f_low = npv_from_points(low, points)
+    f_high = npv_from_points(high, points)
+
+    if f_low is None or f_high is None:
+        return None
+    if abs(f_low) <= tol:
+        return low
+    if abs(f_high) <= tol:
+        return high
+    if f_low * f_high > 0:
+        return None
+
+    for _ in range(max_iter):
+        mid = (low + high) / 2.0
+        f_mid = npv_from_points(mid, points)
+        if f_mid is None:
+            return None
+        if abs(f_mid) <= tol:
+            return mid
+        if f_low * f_mid <= 0:
+            high = mid
+            f_high = f_mid
+        else:
+            low = mid
+            f_low = f_mid
+
+    return (low + high) / 2.0
+
+
+def solve_all_irrs(cashflows, times):
+    vals, _ = normalize_cashflows(cashflows)
+
+    if len(vals) != len(times):
+        raise ValueError("times phải có cùng số phần tử với cashflows.")
+
+    points = [(float(t), float(cf)) for t, cf in zip(times, vals) if cf != 0.0]
+    if len(points) < 2:
+        return []
+
+    has_positive = any(cf > 0 for _, cf in points)
+    has_negative = any(cf < 0 for _, cf in points)
+    if not (has_positive and has_negative):
+        return []
+
+    roots = []
+    grid = build_rate_grid()
+
+    for i in range(len(grid) - 1):
+        r1 = grid[i]
+        r2 = grid[i + 1]
+        v1 = npv_from_points(r1, points)
+        v2 = npv_from_points(r2, points)
+
+        if v1 is None or v2 is None:
+            continue
+
+        if abs(v1) <= 1e-8:
+            roots.append(r1)
+        if abs(v2) <= 1e-8:
+            roots.append(r2)
+        if v1 * v2 < 0:
+            root = bisect_root(points, r1, r2)
+            if root is not None:
+                roots.append(root)
+
+    roots = sorted(roots)
+    dedup = []
+    for root in roots:
+        if not dedup or abs(root - dedup[-1]) > 1e-6:
+            dedup.append(root)
+
+    return dedup
+
+
+def reference_monthly_return(cashflows, times):
+    vals, _ = normalize_cashflows(cashflows)
+
+    negatives = [(-cf, t) for cf, t in zip(vals, times) if cf < 0]
+    positives = [(cf, t) for cf, t in zip(vals, times) if cf > 0]
+
+    if not negatives or not positives:
+        return None
+
+    total_neg = sum(v for v, _ in negatives)
+    total_pos = sum(v for v, _ in positives)
+
+    avg_out_time = sum(v * t for v, t in negatives) / total_neg
+    avg_in_time = sum(v * t for v, t in positives) / total_pos
+    duration = max(avg_in_time - avg_out_time, 1e-9)
+
+    if total_neg <= 0 or total_pos <= 0:
+        return None
+
+    return (total_pos / total_neg) ** (1.0 / duration) - 1.0
+
+
+def is_economically_positive(cashflows):
+    vals, _ = normalize_cashflows(cashflows)
+    total_pos = sum(v for v in vals if v > 0)
+    total_neg = -sum(v for v in vals if v < 0)
+    return total_pos > total_neg + 1e-9
+
+
+def choose_financial_irr(roots, cashflows, times):
+    if not roots:
+        return None, "Không tìm được nghiệm IRR hợp lệ."
+
+    if len(roots) == 1:
+        return roots[0], None
+
+    vals, _ = normalize_cashflows(cashflows)
+    total_pos = sum(v for v in vals if v > 0)
+    total_neg = -sum(v for v in vals if v < 0)
+    ref = reference_monthly_return(vals, times)
+
+    prefer_non_negative = total_pos >= total_neg - 1e-9
+    preferred = [r for r in roots if r >= 0] if prefer_non_negative else [r for r in roots if r <= 0]
+    candidates = preferred or roots
+
+    if ref is None:
+        chosen = min(candidates, key=lambda r: abs(r))
+    else:
+        chosen = min(candidates, key=lambda r: abs(r - ref))
+
+    note = (
+        f"Có {len(roots)} nghiệm IRR. "
+        f"Đã chọn nghiệm {'không âm' if chosen >= 0 else 'âm'} gần nhất với cấu trúc kinh tế của dòng tiền."
+    )
+    return chosen, note
+
+
+def safe_mirr(cashflows, times, finance_annual_pct, reinvest_annual_pct):
+    vals, _ = normalize_cashflows(cashflows)
+
+    if len(vals) != len(times):
+        raise ValueError("times phải có cùng số phần tử với cashflows.")
+
+    points = [(float(t), float(cf)) for t, cf in zip(times, vals) if cf != 0.0]
+    if len(points) < 2:
+        return None
+
+    has_positive = any(cf > 0 for _, cf in points)
+    has_negative = any(cf < 0 for _, cf in points)
+    if not (has_positive and has_negative):
+        return None
+
+    finance_rate = monthly_rate_from_annual_pct(finance_annual_pct)
+    reinvest_rate = monthly_rate_from_annual_pct(reinvest_annual_pct)
+
+    if finance_rate is None or reinvest_rate is None:
+        return None
+    if finance_rate <= -1 or reinvest_rate <= -1:
+        return None
+
+    horizon = max(t for t, _ in points)
+    if horizon <= 0:
+        return None
+
+    pv_negative = 0.0
+    fv_positive = 0.0
+
+    for t, cf in points:
+        if cf < 0:
+            pv_negative += cf / ((1.0 + finance_rate) ** t)
+        elif cf > 0:
+            fv_positive += cf * ((1.0 + reinvest_rate) ** (horizon - t))
+
+    if pv_negative >= -EPS or fv_positive <= EPS:
+        return None
+
+    return (fv_positive / (-pv_negative)) ** (1.0 / horizon) - 1.0
+
+
+def discounted_npv(cashflows, times, annual_discount_rate_pct):
+    vals, _ = normalize_cashflows(cashflows)
+
+    if len(vals) != len(times):
+        raise ValueError("times phải có cùng số phần tử với cashflows.")
+
+    rate = monthly_rate_from_annual_pct(annual_discount_rate_pct)
+    if rate is None or rate <= -1:
+        return None
+
+    total = 0.0
+    for t, cf in zip(times, vals):
+        total += cf / ((1.0 + rate) ** float(t))
+    return total
+
+
+def classify_real_mirr_vs_bank(real_mirr_pct, bank_real_rate_pct):
+    if real_mirr_pct is None or bank_real_rate_pct is None:
         return (
             "REVIEW",
             None,
-            "Không tính được đầy đủ IRR vốn chủ thực hoặc lãi suất ngân hàng thực để so sánh theo Fisher.",
+            "Không tính được đầy đủ MIRR vốn chủ thực hoặc lãi suất ngân hàng thực để so sánh theo Fisher.",
         )
 
-    spread = real_irr_pct - bank_real_rate_pct
+    spread = real_mirr_pct - bank_real_rate_pct
 
     if spread >= 5:
         return (
             "GO",
             spread,
-            f"IRR vốn chủ thực cao hơn lãi suất ngân hàng thực {spread:.2f} điểm %, tạo chênh lệch đủ hấp dẫn so với kênh gửi ngân hàng.",
+            f"MIRR vốn chủ thực cao hơn lãi suất ngân hàng thực {spread:.2f} điểm %, tạo chênh lệch đủ hấp dẫn.",
         )
 
     if spread >= 0:
         return (
             "REVIEW",
             spread,
-            f"IRR vốn chủ thực chỉ cao hơn lãi suất ngân hàng thực {spread:.2f} điểm %, chênh lệch dương nhưng chưa đủ dày để an toàn.",
+            f"MIRR vốn chủ thực chỉ cao hơn lãi suất ngân hàng thực {spread:.2f} điểm %, chênh lệch dương nhưng còn mỏng.",
         )
 
     return (
         "NO GO",
         spread,
-        f"IRR vốn chủ thực thấp hơn lãi suất ngân hàng thực {abs(spread):.2f} điểm %, nên hiệu quả thực chưa hấp dẫn bằng benchmark ngân hàng.",
+        f"MIRR vốn chủ thực thấp hơn lãi suất ngân hàng thực {abs(spread):.2f} điểm %, chưa hấp dẫn so với benchmark.",
+    )
+
+
+def classify_npv(npv_value, scale_reference, label):
+    if npv_value is None:
+        return "REVIEW", f"Không tính được {label}."
+
+    if abs(scale_reference) <= EPS:
+        if npv_value > EPS:
+            return "GO", f"{label} dương {npv_value:,.0f}, tạo giá trị gia tăng sau chiết khấu theo benchmark."
+        if npv_value >= -EPS:
+            return "REVIEW", f"{label} xấp xỉ 0, biên an toàn thấp."
+        return "NO GO", f"{label} âm {abs(npv_value):,.0f}, giá trị hiện tại thuần không hấp dẫn."
+
+    ratio_pct = npv_value / scale_reference * 100.0
+
+    if npv_value > EPS and ratio_pct >= 5:
+        return (
+            "GO",
+            f"{label} dương {npv_value:,.0f}, tương đương {ratio_pct:.2f}% trên cơ sở vốn tham chiếu, tạo giá trị tốt.",
+        )
+
+    if npv_value > EPS:
+        return (
+            "REVIEW",
+            f"{label} dương {npv_value:,.0f}, tương đương {ratio_pct:.2f}% trên cơ sở vốn tham chiếu, có giá trị nhưng chưa dày.",
+        )
+
+    if npv_value >= -EPS:
+        return "REVIEW", f"{label} xấp xỉ 0, biên an toàn thấp."
+
+    return (
+        "NO GO",
+        f"{label} âm {abs(npv_value):,.0f}, tương đương {abs(ratio_pct):.2f}% trên cơ sở vốn tham chiếu, chưa tạo giá trị hiện tại thuần.",
     )
 
 
@@ -230,15 +383,21 @@ def classify_multiple(multiple_value, label):
     )
 
 
-def aggregate_decision(real_irr_status, npm_status, multiple_status):
-    if real_irr_status == "NO GO":
+def aggregate_decision(mirr_status, npv_status, npm_status, multiple_status):
+    critical = [mirr_status, npv_status]
+    support = [npm_status, multiple_status]
+
+    if critical.count("NO GO") >= 2:
         return "NO GO"
 
-    if npm_status == "NO GO" and multiple_status == "NO GO":
+    if "NO GO" in critical and "NO GO" in support:
         return "NO GO"
 
-    if real_irr_status == "GO" and npm_status != "NO GO" and multiple_status != "NO GO":
+    if critical.count("GO") == 2 and all(x != "NO GO" for x in support):
         return "GO"
+
+    if support.count("NO GO") >= 2:
+        return "NO GO"
 
     return "REVIEW"
 
@@ -252,10 +411,11 @@ def build_model(inputs):
     avg_dso_days = int(inputs.get("avg_dso_days", 0))
 
     owner_advance_pct = float(inputs.get("owner_advance_pct", 0.0)) / 100.0
-    interest_rate_annual = float(inputs.get("interest_rate", 0.0)) / 100.0
+    interest_rate_pct_input = float(inputs.get("interest_rate", 0.0))
+    interest_rate_annual = interest_rate_pct_input / 100.0
     bank_rate_pct = float(inputs.get("bank_rate_pct", 0.0))
     inflation_rate_pct = float(inputs.get("inflation_rate_pct", 0.0))
-    principal_repayment_mode = str(inputs.get("principal_repayment_mode", "Trả đều theo ngày"))
+    principal_repayment_mode = str(inputs.get("principal_repayment_mode", "Trả định kỳ theo tháng"))
     after_sales_pct = float(inputs.get("after_sales_pct", 0.0)) / 100.0
     warranty_days = int(inputs.get("warranty_days", 0))
 
@@ -286,8 +446,8 @@ def build_model(inputs):
         raise ValueError("Thời hạn bảo hành không được âm.")
 
     valid_principal_modes = {
-        "Trả đều theo ngày",
-        "Trả toàn bộ tại ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối",
+        "Trả định kỳ theo tháng",
+        "Trả hết một lần ở ngày cuối cùng của tháng cuối cùng của giai đoạn thanh toán cuối cùng",
     }
     if principal_repayment_mode not in valid_principal_modes:
         raise ValueError("Phương thức trả gốc vay không hợp lệ.")
@@ -384,6 +544,7 @@ def build_model(inputs):
 
     last_stage_end = stage_plan[-1]["end_day"]
     last_collection_day = max(x["collection_day"] for x in stage_plan)
+    last_payment_day = month_end_day(last_collection_day)
 
     if after_sales_total > 0 and warranty_days > 0:
         after_sales_start_day = last_stage_end + 1
@@ -392,7 +553,7 @@ def build_model(inputs):
         after_sales_start_day = last_stage_end
         after_sales_end_day = last_stage_end
 
-    horizon = max(last_collection_day, after_sales_end_day)
+    horizon = max(last_payment_day, after_sales_end_day)
     timeline = list(range(horizon + 1))
     time_in_months = [t / DAYS_PER_MONTH for t in timeline]
 
@@ -452,6 +613,25 @@ def build_model(inputs):
         raise ValueError("Tổng hạn mức vay không được lớn hơn tổng giá vốn.")
 
     stage_by_start_day = {stage["start_day"]: stage for stage in stage_plan}
+    monthly_payment_days = set(range(30, int(last_payment_day) + 1, 30))
+
+    def calc_principal_due(day_idx, current_debt_balance):
+        if current_debt_balance <= EPS:
+            return 0.0
+
+        if principal_repayment_mode == "Trả định kỳ theo tháng":
+            if day_idx in monthly_payment_days:
+                remaining_payment_days = [d for d in monthly_payment_days if d >= day_idx]
+                if remaining_payment_days:
+                    return current_debt_balance / len(remaining_payment_days)
+            return 0.0
+
+        if principal_repayment_mode == "Trả hết một lần ở ngày cuối cùng của tháng cuối cùng của giai đoạn thanh toán cuối cùng":
+            if day_idx == last_payment_day:
+                return current_debt_balance
+            return 0.0
+
+        return 0.0
 
     def run_waterfall(total_tax_at_horizon):
         debt_draw_local = [0.0] * (horizon + 1)
@@ -476,24 +656,6 @@ def build_model(inputs):
         cash_balance = 0.0
         debt_balance = 0.0
         peak_debt_local = 0.0
-
-        def calc_principal_due(day_idx, current_debt_balance):
-            if current_debt_balance <= EPS:
-                return 0.0
-
-            if principal_repayment_mode == "Trả đều theo ngày":
-                if 1 <= day_idx <= last_collection_day:
-                    remaining_days = last_collection_day - day_idx + 1
-                    if remaining_days > 0:
-                        return current_debt_balance / remaining_days
-                return 0.0
-
-            if principal_repayment_mode == "Trả toàn bộ tại ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối":
-                if day_idx == last_collection_day:
-                    return current_debt_balance
-                return 0.0
-
-            return 0.0
 
         def simulate_forward_no_distribution(start_day, starting_cash, starting_debt):
             sim_cash = float(starting_cash)
@@ -734,11 +896,22 @@ def build_model(inputs):
 
         equity_cf[t] = -equity_in[t] + equity_out[t]
 
-    project_cf_sign_changes = sign_change_count(project_cf)
-    equity_cf_sign_changes = sign_change_count(equity_cf)
+    project_cf_sign_changes = sign_change_count_clean(project_cf)
+    equity_cf_sign_changes = sign_change_count_clean(equity_cf)
 
-    project_irr_monthly = safe_irr(project_cf, time_in_months)
-    equity_irr_monthly = safe_irr(equity_cf, time_in_months)
+    project_irr_roots = solve_all_irrs(project_cf, time_in_months)
+    equity_irr_roots = solve_all_irrs(equity_cf, time_in_months)
+
+    project_irr_monthly, project_irr_selection_note = choose_financial_irr(
+        project_irr_roots,
+        project_cf,
+        time_in_months,
+    )
+    equity_irr_monthly, equity_irr_selection_note = choose_financial_irr(
+        equity_irr_roots,
+        equity_cf,
+        time_in_months,
+    )
 
     project_irr_warning = None
     equity_irr_warning = None
@@ -746,14 +919,48 @@ def build_model(inputs):
     if project_cf_sign_changes > 1:
         project_irr_warning = (
             f"Project cash flow đổi dấu {project_cf_sign_changes} lần; "
-            "IRR vẫn được tính theo nghiệm tìm thấy trong khoảng dò, nhưng có thể không duy nhất."
+            "IRR có thể không duy nhất. Hệ thống đã chọn nghiệm tài chính phù hợp nhất."
         )
-
     if equity_cf_sign_changes > 1:
         equity_irr_warning = (
             f"Equity cash flow đổi dấu {equity_cf_sign_changes} lần; "
-            "IRR vẫn được tính theo nghiệm tìm thấy trong khoảng dò, nhưng có thể không duy nhất."
+            "IRR có thể không duy nhất. Hệ thống đã chọn nghiệm tài chính phù hợp nhất."
         )
+
+    if project_irr_selection_note:
+        project_irr_warning = (
+            f"{project_irr_warning} {project_irr_selection_note}".strip()
+            if project_irr_warning
+            else project_irr_selection_note
+        )
+    if equity_irr_selection_note:
+        equity_irr_warning = (
+            f"{equity_irr_warning} {equity_irr_selection_note}".strip()
+            if equity_irr_warning
+            else equity_irr_selection_note
+        )
+
+    if project_irr_monthly is not None and project_irr_monthly < 0 and is_economically_positive(project_cf):
+        non_negative_roots = [r for r in project_irr_roots if r >= 0]
+        if non_negative_roots:
+            ref = reference_monthly_return(project_cf, time_in_months) or 0.0
+            project_irr_monthly = min(non_negative_roots, key=lambda r: abs(r - ref))
+            project_irr_warning = (
+                f"{project_irr_warning} Đã loại nghiệm âm bất thường và chuyển sang nghiệm không âm hợp lý hơn."
+                if project_irr_warning
+                else "Đã loại nghiệm âm bất thường và chuyển sang nghiệm không âm hợp lý hơn."
+            )
+
+    if equity_irr_monthly is not None and equity_irr_monthly < 0 and is_economically_positive(equity_cf):
+        non_negative_roots = [r for r in equity_irr_roots if r >= 0]
+        if non_negative_roots:
+            ref = reference_monthly_return(equity_cf, time_in_months) or 0.0
+            equity_irr_monthly = min(non_negative_roots, key=lambda r: abs(r - ref))
+            equity_irr_warning = (
+                f"{equity_irr_warning} Đã loại nghiệm âm bất thường và chuyển sang nghiệm không âm hợp lý hơn."
+                if equity_irr_warning
+                else "Đã loại nghiệm âm bất thường và chuyển sang nghiệm không âm hợp lý hơn."
+            )
 
     project_irr_annual = annualize_monthly_irr(project_irr_monthly)
     equity_irr_annual = annualize_monthly_irr(equity_irr_monthly)
@@ -761,6 +968,21 @@ def build_model(inputs):
     project_real_irr_annual = fisher_real_rate_pct(project_irr_annual, inflation_rate_pct)
     equity_real_irr_annual = fisher_real_rate_pct(equity_irr_annual, inflation_rate_pct)
     bank_real_rate_annual = fisher_real_rate_pct(bank_rate_pct, inflation_rate_pct)
+
+    project_mirr_monthly = safe_mirr(project_cf, time_in_months, interest_rate_pct_input, bank_rate_pct)
+    equity_mirr_monthly = safe_mirr(equity_cf, time_in_months, interest_rate_pct_input, bank_rate_pct)
+    project_mirr_annual = annualize_monthly_rate(project_mirr_monthly)
+    equity_mirr_annual = annualize_monthly_rate(equity_mirr_monthly)
+    project_real_mirr_annual = fisher_real_rate_pct(project_mirr_annual, inflation_rate_pct)
+    equity_real_mirr_annual = fisher_real_rate_pct(equity_mirr_annual, inflation_rate_pct)
+
+    real_mirr_status, real_mirr_spread_vs_bank, real_mirr_explanation = classify_real_mirr_vs_bank(
+        equity_real_mirr_annual,
+        bank_real_rate_annual,
+    )
+
+    project_npv = discounted_npv(project_cf, time_in_months, bank_rate_pct)
+    equity_npv = discounted_npv(equity_cf, time_in_months, bank_rate_pct)
 
     cum_equity_cf = []
     running_cum_equity_cf = 0.0
@@ -806,40 +1028,48 @@ def build_model(inputs):
     if net_contract_value > EPS:
         net_profit_margin = (net_profit_for_margin / net_contract_value) * 100.0
 
-    real_irr_status, real_irr_spread_vs_bank, real_irr_explanation = classify_real_irr_vs_bank(
-        equity_real_irr_annual,
-        bank_real_rate_annual,
-    )
+    npv_reference_scale = total_equity_in if total_equity_in > EPS else max(peak_equity_at_risk, net_contract_value, 1.0)
+    npv_status, npv_explanation = classify_npv(equity_npv, npv_reference_scale, "NPV vốn chủ")
     net_profit_margin_status, net_profit_margin_explanation = classify_net_profit_margin(net_profit_margin)
     moic_status, moic_explanation = classify_multiple(moic, "MOIC")
     equity_multiple_status, equity_multiple_explanation = classify_multiple(equity_multiple, "Equity Multiple")
 
-    decision = aggregate_decision(real_irr_status, net_profit_margin_status, moic_status)
+    decision = aggregate_decision(real_mirr_status, npv_status, net_profit_margin_status, moic_status)
 
     decision_basis = (
-        "Đánh giá sơ bộ hiện dựa trên 3 lớp: "
-        "(1) IRR vốn chủ thực theo Fisher so với lãi suất ngân hàng thực; "
-        "(2) Net Profit Margin; "
-        "(3) MOIC/Equity Multiple. "
-        "GO khi IRR thực vượt benchmark đủ tốt và các chỉ số còn lại không yếu; "
-        "NO GO nếu IRR thực thua benchmark hoặc cả biên lợi nhuận lẫn multiple đều yếu; "
-        "các trường hợp còn lại là REVIEW."
+        "Đánh giá sơ bộ hiện dựa trên 4 lớp: "
+        "(1) MIRR vốn chủ thực theo Fisher so với lãi suất ngân hàng thực; "
+        "(2) NPV vốn chủ chiết khấu theo lãi suất ngân hàng benchmark; "
+        "(3) Net Profit Margin; "
+        "(4) MOIC/Equity Multiple. "
+        "IRR chỉ dùng để hiển thị tham khảo, không còn dùng để chấm GO/REVIEW/NO GO."
     )
 
     fisher_basis = (
-        "IRR thực và lãi suất ngân hàng thực được quy đổi theo Fisher: "
+        "Các chỉ số thực được quy đổi theo Fisher: "
         "real = ((1 + nominal) / (1 + inflation)) - 1. "
         "Việc đánh giá ưu tiên nhìn trên sức sinh lời thực sau khi loại ảnh hưởng của lạm phát."
     )
 
     irr_basis = (
-        "IRR được tính theo hệ quy chiếu tháng lẻ: mỗi mốc thời gian được đổi thành số tháng bằng ngày/30, "
-        "sau đó giải IRR theo mốc tháng và annualize theo công thức (1 + IRR_tháng)^12 - 1."
+        "IRR được tính theo hệ quy chiếu tháng lẻ: mỗi mốc thời gian được đổi thành số tháng bằng ngày/30. "
+        "Hệ thống quét nhiều khoảng lãi suất, tìm tất cả nghiệm khả dĩ rồi chọn nghiệm tài chính phù hợp nhất."
+    )
+
+    mirr_basis = (
+        "MIRR được tính trên cùng trục thời gian tháng lẻ. "
+        "Dòng tiền âm được chiết khấu theo finance rate và dòng tiền dương được tái đầu tư theo benchmark, "
+        "sau đó annualize theo hệ tháng."
+    )
+
+    npv_basis = (
+        "NPV được tính bằng cách chiết khấu dòng tiền theo lãi suất ngân hàng benchmark năm, "
+        "quy đổi sang suất chiết khấu tháng hiệu dụng để phù hợp với trục thời gian tháng lẻ."
     )
 
     net_profit_margin_basis = (
         "Net Profit Margin = Lợi nhuận ròng từ hoạt động hợp đồng / Giá trị hợp đồng sau chiết khấu. "
-        "Trong mô hình này, khi tính margin đã loại phần salvage khỏi tử số để tránh làm đẹp giả biên lợi nhuận ròng của hoạt động chính."
+        "Khi tính margin đã loại phần salvage khỏi tử số để tránh làm đẹp giả biên lợi nhuận ròng của hoạt động chính."
     )
 
     multiple_basis = (
@@ -853,13 +1083,15 @@ def build_model(inputs):
         "phần thiếu mới rút vay của đúng giai đoạn đó, phần thiếu còn lại mới dùng VCSH."
     )
 
-    if principal_repayment_mode == "Trả đều theo ngày":
+    if principal_repayment_mode == "Trả định kỳ theo tháng":
         principal_repayment_basis = (
-            "Trả gốc vay theo phương thức trả đều theo ngày. "
-            "Mỗi ngày, số gốc phải trả được phân bổ đều trên số ngày còn lại đến ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối."
+            "Trả gốc vay theo chu kỳ cuối tháng 30 ngày của mô hình. "
+            "Tại mỗi cuối tháng, số gốc phải trả được phân bổ đều trên số kỳ cuối tháng còn lại đến tháng thanh toán cuối."
         )
     else:
-        principal_repayment_basis = "Trả toàn bộ gốc vay tại ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối."
+        principal_repayment_basis = (
+            "Trả toàn bộ gốc vay tại ngày cuối cùng của tháng cuối cùng chứa kỳ thanh toán cuối của dự án."
+        )
 
     interest_basis = (
         "Lãi vay được tính theo ngày trên dư nợ sau rút vay của chính ngày đó, với quy ước lãi suất năm/360. "
@@ -868,9 +1100,14 @@ def build_model(inputs):
 
     evaluation_table = [
         {
-            "Nhóm đánh giá": "IRR thực vs lãi suất NH thực",
-            "Kết quả": real_irr_status,
-            "Diễn giải": real_irr_explanation,
+            "Nhóm đánh giá": "MIRR thực vs lãi suất NH thực",
+            "Kết quả": real_mirr_status,
+            "Diễn giải": real_mirr_explanation,
+        },
+        {
+            "Nhóm đánh giá": "NPV vốn chủ",
+            "Kết quả": npv_status,
+            "Diễn giải": npv_explanation,
         },
         {
             "Nhóm đánh giá": "Net Profit Margin",
@@ -915,6 +1152,8 @@ def build_model(inputs):
         "project_cf": project_cf,
         "project_cf_sign_changes": project_cf_sign_changes,
         "equity_cf_sign_changes": equity_cf_sign_changes,
+        "project_irr_roots": project_irr_roots,
+        "equity_irr_roots": equity_irr_roots,
         "project_irr_warning": project_irr_warning,
         "equity_irr_warning": equity_irr_warning,
         "project_irr_monthly": None if project_irr_monthly is None else project_irr_monthly * 100.0,
@@ -923,8 +1162,16 @@ def build_model(inputs):
         "equity_irr_annual": equity_irr_annual,
         "project_real_irr_annual": project_real_irr_annual,
         "equity_real_irr_annual": equity_real_irr_annual,
+        "project_mirr_monthly": None if project_mirr_monthly is None else project_mirr_monthly * 100.0,
+        "equity_mirr_monthly": None if equity_mirr_monthly is None else equity_mirr_monthly * 100.0,
+        "project_mirr_annual": project_mirr_annual,
+        "equity_mirr_annual": equity_mirr_annual,
+        "project_real_mirr_annual": project_real_mirr_annual,
+        "equity_real_mirr_annual": equity_real_mirr_annual,
         "bank_real_rate_annual": bank_real_rate_annual,
-        "real_irr_spread_vs_bank": real_irr_spread_vs_bank,
+        "real_mirr_spread_vs_bank": real_mirr_spread_vs_bank,
+        "project_npv": project_npv,
+        "equity_npv": equity_npv,
         "equity_multiple": equity_multiple,
         "moic": moic,
         "net_profit": net_profit,
@@ -938,16 +1185,20 @@ def build_model(inputs):
         "decision_basis": decision_basis,
         "fisher_basis": fisher_basis,
         "irr_basis": irr_basis,
+        "mirr_basis": mirr_basis,
+        "npv_basis": npv_basis,
         "net_profit_margin_basis": net_profit_margin_basis,
         "multiple_basis": multiple_basis,
         "source_of_funds_basis": source_of_funds_basis,
         "principal_repayment_basis": principal_repayment_basis,
         "interest_basis": interest_basis,
-        "real_irr_status": real_irr_status,
+        "real_mirr_status": real_mirr_status,
+        "npv_status": npv_status,
         "net_profit_margin_status": net_profit_margin_status,
         "moic_status": moic_status,
         "equity_multiple_status": equity_multiple_status,
-        "real_irr_explanation": real_irr_explanation,
+        "real_mirr_explanation": real_mirr_explanation,
+        "npv_explanation": npv_explanation,
         "net_profit_margin_explanation": net_profit_margin_explanation,
         "moic_explanation": moic_explanation,
         "equity_multiple_explanation": equity_multiple_explanation,
@@ -970,6 +1221,7 @@ def build_model(inputs):
         "total_actual_debt_draw": total_actual_debt_draw,
         "principal_repayment_mode": principal_repayment_mode,
         "last_collection_day": last_collection_day,
+        "last_payment_day": last_payment_day,
         "bank_rate_pct": bank_rate_pct,
         "inflation_rate_pct": inflation_rate_pct,
     }
