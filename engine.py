@@ -1,8 +1,9 @@
 import math
 
-
 EPS = 1e-9
 DAY_BASIS = 360.0
+DAYS_PER_MONTH = 30.0
+MONTHS_PER_YEAR = 12.0
 
 
 def sign_change_count(cashflows):
@@ -12,18 +13,24 @@ def sign_change_count(cashflows):
     return sum((a > 0) != (b > 0) for a, b in zip(vals, vals[1:]))
 
 
-def safe_irr(cashflows):
+def safe_irr(cashflows, times=None):
     if not cashflows or len(cashflows) < 2:
         return None
 
     vals = [float(x) for x in cashflows]
     has_positive = any(v > 0 for v in vals)
     has_negative = any(v < 0 for v in vals)
-
     if not (has_positive and has_negative):
         return None
 
-    points = [(idx, val) for idx, val in enumerate(vals) if abs(val) > EPS]
+    if times is None:
+        time_points = [float(i) for i in range(len(vals))]
+    else:
+        if len(times) != len(vals):
+            raise ValueError("times phải có cùng số phần tử với cashflows.")
+        time_points = [float(t) for t in times]
+
+    points = [(t, cf) for t, cf in zip(time_points, vals) if abs(cf) > EPS]
     if len(points) < 2:
         return None
 
@@ -50,6 +57,7 @@ def safe_irr(cashflows):
             -0.25,
             -0.10,
             0.0,
+            0.02,
             0.05,
             0.10,
             0.20,
@@ -65,8 +73,7 @@ def safe_irr(cashflows):
 
         npv_values = []
         for r in candidate_rates:
-            v = npv(r)
-            npv_values.append((r, v))
+            npv_values.append((r, npv(r)))
 
         bracket = None
         for i in range(len(npv_values) - 1):
@@ -91,7 +98,6 @@ def safe_irr(cashflows):
 
             npv_low = npv(low)
             npv_high = npv(high)
-
             if npv_low is None or npv_high is None:
                 return None
 
@@ -108,7 +114,7 @@ def safe_irr(cashflows):
 
             bracket = (low, high, npv_low, npv_high)
 
-        low, high, npv_low, npv_high = bracket
+        low, high, npv_low, _ = bracket
 
         for _ in range(300):
             mid = (low + high) / 2.0
@@ -121,7 +127,6 @@ def safe_irr(cashflows):
 
             if npv_low * npv_mid <= 0:
                 high = mid
-                npv_high = npv_mid
             else:
                 low = mid
                 npv_low = npv_mid
@@ -131,10 +136,10 @@ def safe_irr(cashflows):
         return None
 
 
-def annualize_daily_irr(daily_irr):
-    if daily_irr is None:
+def annualize_monthly_irr(monthly_irr):
+    if monthly_irr is None:
         return None
-    return ((1 + daily_irr) ** DAY_BASIS - 1) * 100
+    return ((1 + monthly_irr) ** MONTHS_PER_YEAR - 1) * 100
 
 
 def fisher_real_rate_pct(nominal_annual_pct, inflation_annual_pct):
@@ -345,27 +350,31 @@ def build_model(inputs):
         end_day = start_day + s["duration_days"] - 1
         collection_day = end_day + avg_dso_days
 
-        gross_contract_billing_value = gross_deal_value * (s["payment_pct"] / 100.0)
-        stage_discount_amount = contract_discount_amount * (s["payment_pct"] / 100.0)
-        net_stage_billing_value = net_contract_value * (s["payment_pct"] / 100.0)
+        revenue_share = s["payment_pct"] / total_stage_payment_pct
+        gross_contract_billing_value = gross_deal_value * revenue_share
+        stage_discount_amount = contract_discount_amount * revenue_share
+        net_stage_billing_value = net_contract_value * revenue_share
+        advance_offset = owner_advance_amount * revenue_share
+        net_collection_value = net_stage_billing_value - advance_offset
         stage_cost = total_cost * (s["cost_out_pct"] / 100.0)
 
         stage_plan.append(
             {
                 "stage_no": s["stage_no"],
-                "name": name if False else s["name"],
+                "name": s["name"],
                 "duration_days": s["duration_days"],
                 "start_day": start_day,
                 "end_day": end_day,
                 "collection_day": collection_day,
                 "payment_pct": s["payment_pct"],
                 "cost_out_pct": s["cost_out_pct"],
+                "revenue_share_pct": revenue_share * 100.0,
                 "gross_contract_billing_value": gross_contract_billing_value,
                 "stage_discount_amount": stage_discount_amount,
                 "net_stage_billing_value": net_stage_billing_value,
+                "advance_offset": advance_offset,
+                "net_collection_value": net_collection_value,
                 "stage_cost": stage_cost,
-                "advance_offset": 0.0,
-                "net_collection_value": 0.0,
                 "customer_cash_used_for_stage_cost": 0.0,
                 "actual_debt_draw": 0.0,
                 "actual_equity_for_stage_cost": 0.0,
@@ -384,8 +393,8 @@ def build_model(inputs):
         after_sales_end_day = last_stage_end
 
     horizon = max(last_collection_day, after_sales_end_day)
-
     timeline = list(range(horizon + 1))
+    time_in_months = [t / DAYS_PER_MONTH for t in timeline]
 
     customer_advance = [0.0] * (horizon + 1)
     billing_gross = [0.0] * (horizon + 1)
@@ -401,19 +410,11 @@ def build_model(inputs):
     customer_advance[0] = owner_advance_amount
 
     for stage in stage_plan:
-        gross_stage_billing = stage["gross_contract_billing_value"]
-        stage_discount = stage["stage_discount_amount"]
-        net_stage_billing = stage["net_stage_billing_value"]
-
-        billing_gross[stage["end_day"]] += gross_stage_billing
-        billing_discount[stage["end_day"]] += stage_discount
-        billing_net[stage["end_day"]] += net_stage_billing
-
-        net_billing[stage["end_day"]] += net_stage_billing
-        collections[stage["collection_day"]] += net_stage_billing
-
-        stage["advance_offset"] = 0.0
-        stage["net_collection_value"] = net_stage_billing
+        billing_gross[stage["end_day"]] += stage["gross_contract_billing_value"]
+        billing_discount[stage["end_day"]] += stage["stage_discount_amount"]
+        billing_net[stage["end_day"]] += stage["net_stage_billing_value"]
+        net_billing[stage["end_day"]] += stage["net_stage_billing_value"]
+        collections[stage["collection_day"]] += stage["net_collection_value"]
 
     for stage in stage_plan:
         cost[stage["start_day"]] += stage["stage_cost"]
@@ -535,8 +536,9 @@ def build_model(inputs):
                     if sim_debt < EPS:
                         sim_debt = 0.0
 
-            if sim_debt > EPS:
-                future_equity_needed += sim_debt
+                if tt == horizon and sim_debt > EPS:
+                    future_equity_needed += sim_debt
+                    sim_debt = 0.0
 
             return future_equity_needed
 
@@ -578,15 +580,13 @@ def build_model(inputs):
             reserve_cache[cache_key] = hi
             return hi
 
-        distribution_days = set([0, horizon])
+        distribution_days = {0, horizon}
         distribution_days.update(t for t, x in enumerate(collections) if abs(x) > EPS)
         distribution_days.update(t for t, x in enumerate(customer_advance) if abs(x) > EPS)
         distribution_days.update(t for t, x in enumerate(salvage) if abs(x) > EPS)
 
         for t in timeline:
             opening_cash_local[t] = cash_balance
-            debt_balance_before_today = debt_balance
-
             cash_balance += customer_advance[t] + collections[t] + salvage[t]
 
             if t in stage_by_start_day:
@@ -616,11 +616,10 @@ def build_model(inputs):
 
             peak_debt_local = max(peak_debt_local, debt_balance)
 
-            interest_due = debt_balance_before_today * daily_interest_rate if debt_balance_before_today > EPS else 0.0
+            interest_due = debt_balance * daily_interest_rate if debt_balance > EPS else 0.0
             interest_local[t] = interest_due
 
             principal_due = calc_principal_due(t, debt_balance)
-
             other_outflows = after_sales[t] + interest_due + tax_local[t] + principal_due
 
             if cash_balance >= other_outflows:
@@ -738,8 +737,8 @@ def build_model(inputs):
     project_cf_sign_changes = sign_change_count(project_cf)
     equity_cf_sign_changes = sign_change_count(equity_cf)
 
-    project_irr_day = safe_irr(project_cf)
-    equity_irr_day = safe_irr(equity_cf)
+    project_irr_monthly = safe_irr(project_cf, time_in_months)
+    equity_irr_monthly = safe_irr(equity_cf, time_in_months)
 
     project_irr_warning = None
     equity_irr_warning = None
@@ -756,8 +755,8 @@ def build_model(inputs):
             "IRR vẫn được tính theo nghiệm tìm thấy trong khoảng dò, nhưng có thể không duy nhất."
         )
 
-    project_irr_annual = annualize_daily_irr(project_irr_day)
-    equity_irr_annual = annualize_daily_irr(equity_irr_day)
+    project_irr_annual = annualize_monthly_irr(project_irr_monthly)
+    equity_irr_annual = annualize_monthly_irr(equity_irr_monthly)
 
     project_real_irr_annual = fisher_real_rate_pct(project_irr_annual, inflation_rate_pct)
     equity_real_irr_annual = fisher_real_rate_pct(equity_irr_annual, inflation_rate_pct)
@@ -802,7 +801,6 @@ def build_model(inputs):
     moic = equity_multiple
 
     net_profit = net_contract_value + salvage_value_total - total_cost - after_sales_total - total_interest - total_cit
-
     net_profit_for_margin = net_contract_value - total_cost - after_sales_total - total_interest - total_cit
     net_profit_margin = None
     if net_contract_value > EPS:
@@ -834,6 +832,11 @@ def build_model(inputs):
         "Việc đánh giá ưu tiên nhìn trên sức sinh lời thực sau khi loại ảnh hưởng của lạm phát."
     )
 
+    irr_basis = (
+        "IRR được tính theo hệ quy chiếu tháng lẻ: mỗi mốc thời gian được đổi thành số tháng bằng ngày/30, "
+        "sau đó giải IRR theo mốc tháng và annualize theo công thức (1 + IRR_tháng)^12 - 1."
+    )
+
     net_profit_margin_basis = (
         "Net Profit Margin = Lợi nhuận ròng từ hoạt động hợp đồng / Giá trị hợp đồng sau chiết khấu. "
         "Trong mô hình này, khi tính margin đã loại phần salvage khỏi tử số để tránh làm đẹp giả biên lợi nhuận ròng của hoạt động chính."
@@ -858,6 +861,11 @@ def build_model(inputs):
     else:
         principal_repayment_basis = "Trả toàn bộ gốc vay tại ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối."
 
+    interest_basis = (
+        "Lãi vay được tính theo ngày trên dư nợ sau rút vay của chính ngày đó, với quy ước lãi suất năm/360. "
+        "Nhờ vậy cách ghi nhận rút vay, lãi vay và trả gốc trong mô hình là nhất quán trên cùng một timeline."
+    )
+
     evaluation_table = [
         {
             "Nhóm đánh giá": "IRR thực vs lãi suất NH thực",
@@ -878,6 +886,7 @@ def build_model(inputs):
 
     return {
         "timeline": timeline,
+        "time_in_months": time_in_months,
         "stage_plan": stage_plan,
         "customer_advance": customer_advance,
         "billing_gross": billing_gross,
@@ -908,6 +917,8 @@ def build_model(inputs):
         "equity_cf_sign_changes": equity_cf_sign_changes,
         "project_irr_warning": project_irr_warning,
         "equity_irr_warning": equity_irr_warning,
+        "project_irr_monthly": None if project_irr_monthly is None else project_irr_monthly * 100.0,
+        "equity_irr_monthly": None if equity_irr_monthly is None else equity_irr_monthly * 100.0,
         "project_irr_annual": project_irr_annual,
         "equity_irr_annual": equity_irr_annual,
         "project_real_irr_annual": project_real_irr_annual,
@@ -926,10 +937,12 @@ def build_model(inputs):
         "decision": decision,
         "decision_basis": decision_basis,
         "fisher_basis": fisher_basis,
+        "irr_basis": irr_basis,
         "net_profit_margin_basis": net_profit_margin_basis,
         "multiple_basis": multiple_basis,
         "source_of_funds_basis": source_of_funds_basis,
         "principal_repayment_basis": principal_repayment_basis,
+        "interest_basis": interest_basis,
         "real_irr_status": real_irr_status,
         "net_profit_margin_status": net_profit_margin_status,
         "moic_status": moic_status,
