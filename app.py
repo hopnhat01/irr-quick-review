@@ -1,3 +1,4 @@
+# app.py
 import numbers
 
 import pandas as pd
@@ -94,12 +95,13 @@ with st.expander("Giải thích nhanh cách nhập liệu", expanded=False):
     st.write("4) Giai đoạn nghiệm thu tối đa 5 giai đoạn, có thể để trống các giai đoạn cuối.")
     st.write("5) Mỗi giai đoạn cần nhập thời lượng thi công (ngày), tỷ lệ thanh toán (% giá trị hợp đồng sau chiết khấu) và tỷ lệ chi tiền đầu giai đoạn (% giá vốn).")
     st.write("6) Tổng tỷ lệ chi tiền đầu các giai đoạn phải bằng đúng 100% giá vốn.")
-    st.write("7) Hạn mức vay theo giai đoạn được nhập theo % giá vốn. Hệ thống sẽ ưu tiên dùng tiền sẵn có từ CĐT/thu trước đó trước, phần thiếu mới rút vay, phần thiếu còn lại mới dùng VCSH.")
-    st.write("8) Có thể chọn 2 kiểu trả gốc vay: trả đều theo ngày hoặc trả toàn bộ tại ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối.")
+    st.write("7) Hạn mức vay theo giai đoạn được nhập theo % giá vốn. Hệ thống ưu tiên dùng tiền sẵn có từ CĐT/thu trước đó trước, phần thiếu mới rút vay, phần thiếu còn lại mới dùng VCSH.")
+    st.write("8) Có 2 kiểu trả gốc vay: trả định kỳ vào cuối tháng hoặc trả toàn bộ vào ngày cuối cùng của tháng cuối cùng chứa kỳ thanh toán cuối.")
     st.write("9) Lãi vay được nhập theo năm, sau đó quy đổi về ngày theo tham chiếu lãi suất năm / 360.")
-    st.write("10) IRR được tính theo hệ tháng lẻ: mỗi mốc thời gian dùng số tháng = số ngày / 30, rồi annualize theo (1 + IRR_tháng)^12 - 1.")
-    st.write("11) Lạm phát và lãi suất ngân hàng benchmark vẫn được giữ ở hệ năm để quy đổi theo Fisher và so sánh với IRR vốn chủ annualized.")
-    st.write("12) MOIC / Equity Multiple và Net Profit Margin cũng được đưa vào phần đánh giá sơ bộ.")
+    st.write("10) IRR được tính trên trục tháng lẻ: mỗi mốc thời gian dùng số tháng = số ngày / 30. Hệ thống quét nhiều nghiệm và chọn nghiệm tài chính phù hợp nhất.")
+    st.write("11) MIRR và NPV được bổ sung để hỗ trợ ra quyết định; IRR chỉ dùng để hiển thị tham khảo.")
+    st.write("12) Lạm phát và lãi suất ngân hàng benchmark được dùng để quy đổi chỉ tiêu thực theo Fisher và để chiết khấu NPV benchmark.")
+    st.write("13) MOIC / Equity Multiple và Net Profit Margin vẫn được giữ trong bộ đánh giá sơ bộ.")
 
 st.subheader("1. Thông tin cơ bản")
 
@@ -194,12 +196,12 @@ interest_rate = st.number_input(
 st.caption("Hiển thị: " + format_vn(interest_rate, 2) + " %")
 
 bank_rate_pct = st.number_input(
-    "Lãi suất ngân hàng benchmark năm (%) để so sánh tương ứng lãi tiền gửi",
+    "Lãi suất ngân hàng benchmark năm (%) để so sánh / chiết khấu NPV",
     min_value=0.0,
     max_value=100.0,
     value=6.0,
     step=0.1,
-    help="Dùng để so sánh với IRR vốn chủ thực sau khi quy đổi theo Fisher.",
+    help="Dùng làm benchmark cho NPV và MIRR / Fisher real comparison.",
 )
 st.caption("Hiển thị: " + format_vn(bank_rate_pct, 2) + " %")
 
@@ -216,8 +218,8 @@ st.caption("Hiển thị: " + format_vn(inflation_rate_pct, 2) + " %")
 principal_repayment_mode = st.selectbox(
     "Phương thức trả gốc vay",
     options=[
-        "Trả đều theo ngày",
-        "Trả toàn bộ tại ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối",
+        "Trả định kỳ theo tháng",
+        "Trả hết một lần ở ngày cuối cùng của tháng cuối cùng của giai đoạn thanh toán cuối cùng",
     ],
     index=0,
 )
@@ -515,8 +517,18 @@ if run_button:
         project_irr_monthly = result.get("project_irr_monthly")
         equity_real_irr = result.get("equity_real_irr_annual")
         project_real_irr = result.get("project_real_irr_annual")
+
+        equity_mirr = result.get("equity_mirr_annual")
+        project_mirr = result.get("project_mirr_annual")
+        equity_mirr_monthly = result.get("equity_mirr_monthly")
+        project_mirr_monthly = result.get("project_mirr_monthly")
+        equity_real_mirr = result.get("equity_real_mirr_annual")
+        project_real_mirr = result.get("project_real_mirr_annual")
         bank_real_rate_annual = result.get("bank_real_rate_annual")
-        real_irr_spread_vs_bank = result.get("real_irr_spread_vs_bank")
+        real_mirr_spread_vs_bank = result.get("real_mirr_spread_vs_bank")
+
+        equity_npv = result.get("equity_npv")
+        project_npv = result.get("project_npv")
 
         payback_day = result.get("payback_day")
         payback_message = result.get("payback_message")
@@ -538,41 +550,50 @@ if run_button:
             st.metric("IRR vốn chủ (annualized)", format_vn(equity_irr, 2) + " %" if equity_irr is not None else "Không tính được")
             st.caption("IRR tháng: " + (format_vn(equity_irr_monthly, 4) + " %" if equity_irr_monthly is not None else "Không tính được"))
         with col2:
-            st.metric("IRR vốn chủ thực", format_vn(equity_real_irr, 2) + " %" if equity_real_irr is not None else "Không tính được")
+            st.metric("MIRR vốn chủ (annualized)", format_vn(equity_mirr, 2) + " %" if equity_mirr is not None else "Không tính được")
+            st.caption("MIRR tháng: " + (format_vn(equity_mirr_monthly, 4) + " %" if equity_mirr_monthly is not None else "Không tính được"))
         with col3:
-            st.metric(
-                "Spread IRR thực - LS NH thực",
-                format_vn(real_irr_spread_vs_bank, 2) + " điểm %" if real_irr_spread_vs_bank is not None else "Không tính được",
-            )
+            st.metric("MIRR vốn chủ thực", format_vn(equity_real_mirr, 2) + " %" if equity_real_mirr is not None else "Không tính được")
         with col4:
-            st.metric("Thời gian hoàn vốn", f"{payback_day} ngày" if payback_day is not None else "Chưa hoàn vốn")
+            st.metric(
+                "Spread MIRR thực - LS NH thực",
+                format_vn(real_mirr_spread_vs_bank, 2) + " điểm %" if real_mirr_spread_vs_bank is not None else "Không tính được",
+            )
 
         col5, col6, col7, col8 = st.columns(4)
         with col5:
             st.metric("IRR dự án (annualized)", format_vn(project_irr, 2) + " %" if project_irr is not None else "Không tính được")
             st.caption("IRR tháng: " + (format_vn(project_irr_monthly, 4) + " %" if project_irr_monthly is not None else "Không tính được"))
         with col6:
-            st.metric("IRR dự án thực", format_vn(project_real_irr, 2) + " %" if project_real_irr is not None else "Không tính được")
+            st.metric("MIRR dự án (annualized)", format_vn(project_mirr, 2) + " %" if project_mirr is not None else "Không tính được")
+            st.caption("MIRR tháng: " + (format_vn(project_mirr_monthly, 4) + " %" if project_mirr_monthly is not None else "Không tính được"))
         with col7:
             st.metric("Lãi suất NH thực", format_vn(bank_real_rate_annual, 2) + " %" if bank_real_rate_annual is not None else "Không tính được")
         with col8:
-            st.metric("Net Profit Margin", format_vn(net_profit_margin, 2) + " %" if net_profit_margin is not None else "Không tính được")
+            st.metric("Thời gian hoàn vốn", f"{payback_day} ngày" if payback_day is not None else "Chưa hoàn vốn")
 
         col9, col10, col11, col12 = st.columns(4)
-        col9.metric("Equity Multiple", format_vn(equity_multiple, 2) + "x" if equity_multiple is not None else "Không tính được")
-        col10.metric("MOIC", format_vn(moic, 2) + "x" if moic is not None else "Không tính được")
-        col11.metric("Mức vốn bị giam lớn nhất", format_vn(peak_equity, 0) + " đ" if peak_equity is not None else "-")
-        col12.metric("Dư nợ vay lớn nhất", format_vn(peak_debt, 0) + " đ" if peak_debt is not None else "-")
+        col9.metric("NPV vốn chủ", format_vn(equity_npv, 0) + " đ" if equity_npv is not None else "Không tính được")
+        col10.metric("NPV dự án", format_vn(project_npv, 0) + " đ" if project_npv is not None else "Không tính được")
+        col11.metric("Net Profit Margin", format_vn(net_profit_margin, 2) + " %" if net_profit_margin is not None else "Không tính được")
+        col12.metric("IRR vốn chủ thực", format_vn(equity_real_irr, 2) + " %" if equity_real_irr is not None else "Không tính được")
 
         col13, col14, col15, col16 = st.columns(4)
-        col13.metric("Giá trị HĐ sau chiết khấu", format_vn(net_contract_value, 0) + " đ" if net_contract_value is not None else "-")
-        col14.metric("Tổng chiết khấu hợp đồng", format_vn(contract_discount_amount, 0) + " đ" if contract_discount_amount is not None else "-")
-        col15.metric("Lợi nhuận ròng ước tính", format_vn(net_profit, 0) + " đ" if net_profit is not None else "-")
-        col16.metric("Tổng giá vốn", format_vn(total_cost, 0) + " đ" if total_cost is not None else "-")
+        col13.metric("Equity Multiple", format_vn(equity_multiple, 2) + "x" if equity_multiple is not None else "Không tính được")
+        col14.metric("MOIC", format_vn(moic, 2) + "x" if moic is not None else "Không tính được")
+        col15.metric("Mức vốn bị giam lớn nhất", format_vn(peak_equity, 0) + " đ" if peak_equity is not None else "-")
+        col16.metric("Dư nợ vay lớn nhất", format_vn(peak_debt, 0) + " đ" if peak_debt is not None else "-")
 
-        col17, col18 = st.columns(2)
-        col17.metric("Tổng lãi vay", format_vn(total_interest, 0) + " đ" if total_interest is not None else "-")
-        col18.metric("Thuế CIT", format_vn(total_cit, 0) + " đ" if total_cit is not None else "-")
+        col17, col18, col19, col20 = st.columns(4)
+        col17.metric("Giá trị HĐ sau chiết khấu", format_vn(net_contract_value, 0) + " đ" if net_contract_value is not None else "-")
+        col18.metric("Tổng chiết khấu hợp đồng", format_vn(contract_discount_amount, 0) + " đ" if contract_discount_amount is not None else "-")
+        col19.metric("Lợi nhuận ròng ước tính", format_vn(net_profit, 0) + " đ" if net_profit is not None else "-")
+        col20.metric("Tổng giá vốn", format_vn(total_cost, 0) + " đ" if total_cost is not None else "-")
+
+        col21, col22, col23 = st.columns(3)
+        col21.metric("Tổng lãi vay", format_vn(total_interest, 0) + " đ" if total_interest is not None else "-")
+        col22.metric("Thuế CIT", format_vn(total_cit, 0) + " đ" if total_cit is not None else "-")
+        col23.metric("MIRR dự án thực", format_vn(project_real_mirr, 2) + " %" if project_real_mirr is not None else "Không tính được")
 
         project_irr_warning = result.get("project_irr_warning")
         equity_irr_warning = result.get("equity_irr_warning")
@@ -601,6 +622,14 @@ if run_button:
         if irr_basis:
             st.caption(irr_basis)
 
+        mirr_basis = result.get("mirr_basis")
+        if mirr_basis:
+            st.caption(mirr_basis)
+
+        npv_basis = result.get("npv_basis")
+        if npv_basis:
+            st.caption(npv_basis)
+
         source_logic_basis = result.get("source_of_funds_basis")
         if source_logic_basis:
             st.caption(source_logic_basis)
@@ -621,24 +650,29 @@ if run_button:
 
         st.subheader("Giải thích các trụ đánh giá")
 
-        real_irr_explanation = result.get("real_irr_explanation")
-        if real_irr_explanation:
-            st.write("**1. IRR vốn chủ thực vs lãi suất NH thực**")
-            st.write(real_irr_explanation)
+        real_mirr_explanation = result.get("real_mirr_explanation")
+        if real_mirr_explanation:
+            st.write("**1. MIRR vốn chủ thực vs lãi suất NH thực**")
+            st.write(real_mirr_explanation)
+
+        npv_explanation = result.get("npv_explanation")
+        if npv_explanation:
+            st.write("**2. NPV vốn chủ**")
+            st.write(npv_explanation)
 
         net_profit_margin_explanation = result.get("net_profit_margin_explanation")
         if net_profit_margin_explanation:
-            st.write("**2. Net Profit Margin**")
+            st.write("**3. Net Profit Margin**")
             st.write(net_profit_margin_explanation)
 
         moic_explanation = result.get("moic_explanation")
         if moic_explanation:
-            st.write("**3. MOIC**")
+            st.write("**4. MOIC**")
             st.write(moic_explanation)
 
         equity_multiple_explanation = result.get("equity_multiple_explanation")
         if equity_multiple_explanation:
-            st.write("**4. Equity Multiple**")
+            st.write("**5. Equity Multiple**")
             st.write(equity_multiple_explanation)
 
         if result.get("evaluation_table"):
@@ -763,6 +797,8 @@ if run_button:
                 df["Tiền cuối ngày"] = result["closing_cash"]
             if "ar_balance" in result:
                 df["Công nợ phải thu"] = result["ar_balance"]
+            if "reserve_required" in result:
+                df["Tiền dự trữ yêu cầu"] = result["reserve_required"]
 
             flow_cols_for_cum = [
                 "Tạm ứng CĐT",
@@ -822,7 +858,7 @@ if run_button:
                 "Luỹ kế Dòng tiền vốn chủ",
             ]
 
-            for optional_col in ["Dư nợ cuối ngày", "Tiền cuối ngày", "Công nợ phải thu"]:
+            for optional_col in ["Dư nợ cuối ngày", "Tiền cuối ngày", "Công nợ phải thu", "Tiền dự trữ yêu cầu"]:
                 if optional_col in df_month_end.columns:
                     ordered_cols.append(optional_col)
 
@@ -831,17 +867,19 @@ if run_button:
             st.dataframe(df_display, use_container_width=True)
 
         with st.expander("Giải thích các chỉ số", expanded=False):
-            st.write("- **IRR vốn chủ / IRR dự án** được tính theo hệ tháng lẻ: mốc thời gian = ngày/30; sau đó annualize theo (1 + IRR_tháng)^12 - 1.")
-            st.write("- **IRR vốn chủ thực** = IRR vốn chủ annualized sau khi loại trừ lạm phát theo Fisher.")
-            st.write("- **Lãi suất NH thực** = Lãi suất ngân hàng benchmark danh nghĩa sau khi loại trừ lạm phát theo Fisher.")
-            st.write("- **Spread IRR thực - LS NH thực** = Phần chênh vượt thêm của hiệu quả đầu tư so với benchmark gửi ngân hàng.")
+            st.write("- **IRR vốn chủ / IRR dự án** được tính trên hệ tháng lẻ: mốc thời gian = ngày/30; hệ thống quét nhiều nghiệm khả dĩ và chọn nghiệm tài chính hợp lý nhất.")
+            st.write("- **MIRR vốn chủ / MIRR dự án** dùng cùng trục thời gian tháng lẻ, với finance rate và benchmark reinvestment rate.")
+            st.write("- **IRR vốn chủ thực / MIRR vốn chủ thực** = chỉ tiêu annualized sau khi loại trừ lạm phát theo Fisher.")
+            st.write("- **Lãi suất NH thực** = lãi suất benchmark danh nghĩa sau khi loại trừ lạm phát theo Fisher.")
+            st.write("- **NPV** = Giá trị hiện tại thuần của dòng tiền khi chiết khấu theo lãi suất ngân hàng benchmark năm, quy đổi sang suất tháng hiệu dụng.")
+            st.write("- **MIRR thực vs LS NH thực** và **NPV vốn chủ** hiện là 2 trụ chính mới trong bộ đánh giá sơ bộ; IRR chỉ hiển thị tham khảo.")
             st.write("- **Equity Multiple** = Tổng tiền trả về cho vốn chủ / Tổng vốn chủ đã bơm vào.")
-            st.write("- **MOIC** = Multiple on Invested Capital. Trong mô hình hiện tại, chỉ số này cùng cơ sở với Equity Multiple nên cho cùng kết quả.")
+            st.write("- **MOIC** = Multiple on Invested Capital. Trong mô hình hiện tại, chỉ số này cùng cơ sở với Equity Multiple nên thường cho cùng kết quả.")
             st.write("- **Net Profit Margin** = Lợi nhuận ròng / Giá trị hợp đồng sau chiết khấu.")
             st.write("- **Thời gian hoàn vốn** = Ngày đầu tiên mà dòng tiền vốn chủ lũy kế quay về mức không âm, sau khi đã từng phải bơm vốn.")
             st.write("- **Billing sau CK** là giá trị nghiệm thu sau chiết khấu; **Cấn trừ tạm ứng** là phần tạm ứng ban đầu được phân bổ vào từng giai đoạn; **Thu tiền thực tế** là số tiền còn thu thêm tại ngày thu tiền của giai đoạn.")
             st.write("- **Chi phí đầu giai đoạn** được tài trợ theo thứ tự: tiền sẵn có/CĐT -> vay của giai đoạn đó -> VCSH.")
-            st.write("- **Trả gốc vay** có 2 lựa chọn: trả đều theo ngày hoặc trả toàn bộ vào ngày thu tiền cuối cùng của giai đoạn nghiệm thu cuối.")
+            st.write("- **Trả gốc vay** có 2 lựa chọn: trả định kỳ cuối tháng hoặc trả toàn bộ vào cuối tháng cuối cùng chứa kỳ thanh toán cuối.")
             st.write("- **Chiết khấu hợp đồng** làm giảm doanh thu thực nhận.")
             st.write("- **Tạm ứng CĐT ban đầu + tổng thanh toán các giai đoạn** phải bằng đúng 100% giá trị hợp đồng sau chiết khấu.")
 
