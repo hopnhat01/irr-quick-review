@@ -581,7 +581,7 @@ if run_button:
         col13, col14, col15, col16 = st.columns(4)
         col13.metric("Equity Multiple", format_vn(equity_multiple, 2) + "x" if equity_multiple is not None else "Không tính được")
         col14.metric("MOIC", format_vn(moic, 2) + "x" if moic is not None else "Không tính được")
-        col15.metric("Mức vốn bị giam lớn nhất", format_vn(peak_equity, 0) + " đ" if peak_equity is not None else "-")
+        col15.metric("Vốn công ty phải bỏ ra thời điểm lớn nhất", format_vn(peak_equity, 0) + " đ" if peak_equity is not None else "-")
         col16.metric("Dư nợ vay lớn nhất", format_vn(peak_debt, 0) + " đ" if peak_debt is not None else "-")
 
         col17, col18, col19, col20 = st.columns(4)
